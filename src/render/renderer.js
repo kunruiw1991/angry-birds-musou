@@ -219,14 +219,14 @@ export class Renderer {
 
       if (e.kind === KIND.BLOCK) {
         const sp = getBlockSprite(e, pxPerM);
-        g.drawImage(sp.canvas, -sp.oxM, -sp.oyM, sp.wM, sp.hM);
+        g.drawImage(sp.sheet, sp.sx, sp.sy, sp.sw, sp.sh, -sp.oxM, -sp.oyM, sp.wM, sp.hM);
         if (e.status && (e.status.poison || e.status.tint)) {
           drawStatusOverlay(g, e, t);
           if (e.status.poison) poisonedList.push({ x: p.x, y: p.y, ext: Math.max(e.w || 0.5, e.h || 0.5) * 0.5, id: e.id });
         }
       } else if (e.kind === KIND.PIG) {
         const sp = getPigSprite(e, pxPerM);
-        g.drawImage(sp.canvas, -sp.oxM, -sp.oyM, sp.wM, sp.hM);
+        g.drawImage(sp.sheet, sp.sx, sp.sy, sp.sw, sp.sh, -sp.oxM, -sp.oyM, sp.wM, sp.hM);
         drawPigPupils(g, e, p.x, p.y, a, pigLook);
         if (e.status && (e.status.poison || e.status.tint)) {
           drawStatusOverlay(g, e, t);
@@ -359,7 +359,7 @@ export class Renderer {
     if (skin === 'tnt' || e.mat === 'tnt') {
       const side = (e.r || 0.38) * 1.85;
       const sp = getBlockSprite({ mat: 'tnt', shape: 'box', w: side, h: side, hp: 20, maxHp: 20 }, pxPerM);
-      g.drawImage(sp.canvas, -sp.oxM, -sp.oyM, sp.wM, sp.hM);
+      g.drawImage(sp.sheet, sp.sx, sp.sy, sp.sw, sp.sh, -sp.oxM, -sp.oyM, sp.wM, sp.hM);
       return;
     }
 

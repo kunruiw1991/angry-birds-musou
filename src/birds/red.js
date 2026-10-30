@@ -5,7 +5,7 @@
 import { KIND } from '../contracts.js';
 import {
   TAU, clamp, hash01, holdTurn, spawnBirdClone, steerTowards, guardExplosiveProj,
-  distributeTargets, pickPrimaryTarget, emitBirdHit, makeHudIcon,
+  distributeTargets, pickPrimaryTarget, emitBirdHit, makeHudIcon, drawSmoothRibbon,
   drawCartoonEyes, drawAngryBrows, drawCartoonBeak,
 } from './a_helpers.js';
 
@@ -191,8 +191,11 @@ const red = {
     }
   },
 
-  onTap(ctx, bird, target) {
+  onTap(ctx, bird, _target) {
     const p = ctx.pos(bird);
+    const tapX = p.x;
+    const tapY = p.y;
+    const tapRect = ctx.actionRect();
     const v = ctx.vel(bird);
     bird.data.tapped = true;
     bird.dmgMul = RED_TUNE.selfDmgMul;
@@ -201,28 +204,28 @@ const red = {
       bird.data.ringFx.ttl = Math.min(bird.data.ringFx.ttl, (ctx.time - bird.data.ringFx.t0) + 1.4);
     }
 
-    // Boost Red himself (+30% speed; if stalled after collision, launch toward primary target)
+    // Boost Red himself (+30% speed; if stalled after collision, launch toward primary local target)
     const curSpd = Math.hypot(v.x, v.y);
-    const prim = pickPrimaryTarget(ctx, p.x, p.y, target);
+    const prim = pickPrimaryTarget(ctx, tapX, tapY, { rect: tapRect });
     if (curSpd >= 7) {
       ctx.setVelocity(bird, v.x * RED_TUNE.selfSpeedMul, v.y * RED_TUNE.selfSpeedMul);
     } else {
-      const dx = prim.x - p.x;
-      const dy = prim.y - p.y + 1.2;
+      const dx = prim.x - tapX;
+      const dy = prim.y - tapY + 1.2;
       const d = Math.hypot(dx, dy) || 1;
       ctx.setVelocity(bird, (dx / d) * 17, (dy / d) * 17);
     }
 
     // Immediate VFX + audio + juice (0 ms latency)
-    ctx.addEffect({ type: 'red_burst', x: p.x, y: p.y, r: 3.6, ttl: 0.6 });
+    ctx.addEffect({ type: 'red_burst', x: tapX, y: tapY, r: 3.6, ttl: 0.6 });
     ctx.sfx('ring', { vol: 0.9, pitch: 1.15 });
     ctx.juice({ shake: 0.35, hitstop: 30, flash: { alpha: 0.20, color: '#ff4d94' } });
-    emitBirdHit(ctx, 'red', p.x, p.y, 22);
+    emitBirdHit(ctx, 'red', tapX, tapY, 22);
     holdTurn(ctx, 2.4);
 
-    // Spawn 12 homing mini-Reds from the orbiting 风火轮 ring
+    // Spawn 12 homing mini-Reds from the orbiting 风火轮 ring (local reach from bird at tap time)
     const n = RED_TUNE.orbitCount;
-    const targets = distributeTargets(ctx, p.x, p.y, n, { aheadOnly: false, explicitTarget: target });
+    const targets = distributeTargets(ctx, tapX, tapY, n, { aheadOnly: false, rect: tapRect });
     const phase = bird.data.orbitPhase || 0;
     const trackers = [];
 
@@ -325,13 +328,15 @@ const red = {
             tx = ep.x;
             ty = ep.y;
           } else if (tr.target.ent && !tr.target.ent.alive) {
-            const fresh = ctx.findTargets({ x: cp.x, y: cp.y, kinds: [KIND.PIG], fallbackBlocks: true, max: 6 });
+            const fresh = ctx.findTargets({ x: tapX, y: tapY, kinds: [KIND.PIG], fallbackBlocks: true, max: 8 });
             if (fresh.length) {
               const pick = fresh[i % fresh.length];
               const fp = ctx.pos(pick);
               tr.target = { x: fp.x, y: fp.y, ent: pick };
               tx = fp.x;
               ty = fp.y;
+            } else {
+              tr.target = { x: tr.target.x, y: tr.target.y, ent: null };
             }
           }
           steerTowards(ctx, c, tx, ty, RED_TUNE.homingSteer, dt, RED_TUNE.homingSpeed);
@@ -412,53 +417,12 @@ const red = {
 
     /** Long glowing pink-magenta-white ribbon trail behind homing 风火轮 mini-Reds. */
     red_trail(g, e, t, cam) {
-      const pts = e.pts;
-      if (!pts || pts.length < 2) return;
-      const windowS = 0.72;
-      let startIdx = 0;
-      while (startIdx < pts.length - 1 && t - pts[startIdx].t > windowS) startIdx++;
-      if (pts.length - startIdx < 2) return;
-
-      const thickMul = e.thick || 1.0;
-      g.save();
-      g.lineCap = 'round';
-      g.lineJoin = 'round';
-
-      const nSeg = pts.length - 1 - startIdx;
-      for (let i = startIdx; i < pts.length - 1; i++) {
-        const p0 = pts[i];
-        const p1 = pts[i + 1];
-        const ageFrac = clamp(1 - (t - p1.t) / windowS, 0, 1);
-        if (ageFrac <= 0.02) continue;
-        const taper = ((i - startIdx + 1) / Math.max(1, nSeg)) * ageFrac;
-        const x0 = cam.sx(p0.x), y0 = cam.sy(p0.y);
-        const x1 = cam.sx(p1.x), y1 = cam.sy(p1.y);
-
-        // Rich crimson-pink outer ribbon (source-over so it stays vivid pink on bright daytime skies!)
-        g.strokeStyle = `rgba(255, 22, 115, ${(0.72 * ageFrac).toFixed(3)})`;
-        g.lineWidth = Math.max(4, 0.52 * cam.s * taper * thickMul);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-
-        // Neon rose mid-ribbon
-        g.strokeStyle = `rgba(255, 115, 185, ${(0.82 * ageFrac).toFixed(3)})`;
-        g.lineWidth = Math.max(2.4, 0.28 * cam.s * taper * thickMul);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-
-        // Hot white-pink core
-        g.strokeStyle = `rgba(255, 245, 250, ${(0.92 * ageFrac).toFixed(3)})`;
-        g.lineWidth = Math.max(1.3, 0.12 * cam.s * taper * thickMul);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-      }
-      g.restore();
+      const m = e.thick || 1.0;
+      drawSmoothRibbon(g, cam, e.pts, t, 0.72, [
+        { color: '255, 22, 115', alpha: 0.78, widthM: 0.48 * m, minPx: 4 },
+        { color: '255, 115, 190', alpha: 0.88, widthM: 0.26 * m, minPx: 2.5 },
+        { color: '255, 248, 252', alpha: 0.96, widthM: 0.11 * m, minPx: 1.4 },
+      ]);
     },
 
     /** Pink-crimson starburst ring on 风火轮 release & homing hits. */

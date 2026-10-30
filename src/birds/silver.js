@@ -8,11 +8,11 @@
 import { KIND, CAT } from '../contracts.js';
 import {
   clamp,
+  getActionRect,
   holdTurn,
   setGravityScale,
-  dynamicTargets,
-  resolveTarget,
-  getStructureBounds,
+  findLocalTargets,
+  resolveLocalTarget,
   drawBirdIcon,
 } from './b_helpers.js';
 
@@ -141,35 +141,44 @@ function drawSilverSprite(g, ent) {
   drawSilverBody(g, r);
 }
 
-function pickAirForceTargets(ctx, count) {
-  const all = dynamicTargets(ctx);
-  if (!all.length) {
-    const sb = getStructureBounds(ctx);
+function pickAirForceTargets(ctx, tapPos, rect, count) {
+  const pigs = findLocalTargets(ctx, tapPos, {
+    kinds: [KIND.PIG],
+    max: 30,
+    fallbackBlocks: false,
+  }).sort((a, b) => ctx.pos(a).x - ctx.pos(b).x || a.id - b.id);
+  const blocks = findLocalTargets(ctx, tapPos, {
+    kinds: [KIND.BLOCK],
+    max: 50,
+    fallbackBlocks: false,
+  }).sort((a, b) => ctx.pos(b).y - ctx.pos(a).y || a.id - b.id);
+  const ordered = [...pigs, ...blocks].filter((e) => {
+    const ep = ctx.pos(e);
+    return ep.x >= rect.x0 - 1.0 && ep.x <= rect.x1 + 1.0;
+  });
+
+  if (!ordered.length) {
     const out = [];
+    const xLo = rect.x0 + 2.0;
+    const xHi = Math.max(xLo + 6, rect.x1 - 2.0);
     for (let i = 0; i < count; i++) {
       out.push({
-        x: sb.x0 + ((i + 0.5) / count) * Math.max(6, sb.x1 - sb.x0),
-        y: Math.max(1.0, sb.y1 * 0.3),
+        x: xLo + ((i + 0.5) / count) * (xHi - xLo),
+        y: 1.5,
       });
     }
     return out;
   }
-  // Spread each wave across ALL pigs + distinct x-columns of blocks so all buildings get bombed!
-  const pigs = all
-    .filter((e) => e.kind === KIND.PIG)
-    .sort((a, b) => ctx.pos(a).x - ctx.pos(b).x || a.id - b.id);
-  const blocks = all
-    .filter((e) => e.kind === KIND.BLOCK)
-    .sort((a, b) => ctx.pos(b).y - ctx.pos(a).y || a.id - b.id);
-  const ordered = [...pigs, ...blocks];
+
+  const localPigs = ordered.filter((e) => e.kind === KIND.PIG);
   const out = [];
-  const stride = Math.max(1, Math.floor(pigs.length / Math.max(1, Math.min(count, pigs.length))));
+  const stride = Math.max(1, Math.floor(localPigs.length / Math.max(1, Math.min(count, localPigs.length))));
   for (let i = 0; i < count; i++) {
-    const idx = i < pigs.length ? (i * stride + i) % pigs.length : i % ordered.length;
+    const idx = i < localPigs.length ? (i * stride + i) % localPigs.length : i % ordered.length;
     const e = ordered[idx];
     const p = ctx.pos(e);
     out.push({
-      x: p.x + ctx.range(-1.1, 1.1),
+      x: clamp(p.x + ctx.range(-1.1, 1.1), rect.x0 + 0.5, rect.x1 - 0.5),
       y: Math.max(0.4, p.y + ctx.range(-0.4, 0.7)),
     });
   }
@@ -179,13 +188,14 @@ function pickAirForceTargets(ctx, count) {
 function launchAirForce(ctx, bird) {
   if (bird.data.airForceCalled) return;
   bird.data.airForceCalled = true;
+  const tapPos = bird.data.tapPos || (bird.alive ? { ...ctx.pos(bird) } : { x: 12, y: 8 });
+  const rect = bird.data.tapRect || getActionRect(ctx);
   ctx.sfx('jet');
 
   for (let w = 0; w < WAVES; w++) {
     const delay = w * WAVE_GAP;
     const spawnWave = () => {
-      const rect = ctx.actionRect();
-      const targets = pickAirForceTargets(ctx, PER_WAVE);
+      const targets = pickAirForceTargets(ctx, tapPos, rect, PER_WAVE);
       ctx.sfx('whoosh', { pitch: 1.05 + w * 0.08, vol: 0.55 });
 
       for (let i = 0; i < PER_WAVE; i++) {
@@ -262,10 +272,12 @@ export default {
 
     const startP = { ...ctx.pos(bird) };
     const startV = { ...ctx.vel(bird) };
+    bird.data.tapPos = startP;
+    bird.data.tapRect = getActionRect(ctx);
     const inAng = Math.atan2(startV.y, startV.x);
     const loopCx = startP.x - Math.sin(inAng) * LOOP_R;
     const loopCy = startP.y + Math.cos(inAng) * LOOP_R;
-    const aim = resolveTarget(ctx, bird, target);
+    const aim = resolveLocalTarget(ctx, startP, target);
 
     setGravityScale(ctx, bird, 0);
     ctx.sfx('whoosh', { x: startP.x, y: startP.y, pitch: 1.25 });
@@ -292,10 +304,10 @@ export default {
         return true;
       }
 
-      // Phase 2: 32..35 m/s supersonic slam straight into target!
+      // Phase 2: 32..35 m/s supersonic slam straight into local target!
       setGravityScale(ctx, bird, 0.25);
       const bp = ctx.pos(bird);
-      const liveAim = target ? aim : resolveTarget(ctx, bird, null);
+      const liveAim = target ? aim : resolveLocalTarget(ctx, startP, null);
       const dx = liveAim.x - bp.x;
       const dy = liveAim.y - bp.y;
       const d = Math.hypot(dx, dy) || 1;

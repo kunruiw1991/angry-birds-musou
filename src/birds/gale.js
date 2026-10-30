@@ -8,10 +8,12 @@
 import { KIND } from '../contracts.js';
 import {
   clamp,
+  getActionRect,
   holdTurn,
   setGravityScale,
-  dynamicTargets,
-  resolveTarget,
+  findLocalTargets,
+  resolveLocalTarget,
+  clipSegmentToRect,
   hash01,
   drawBirdIcon,
 } from './b_helpers.js';
@@ -175,7 +177,14 @@ function slashSegment(ctx, x1, y1, x2, y2, { dmg, impulse, halfW = 0.55, source 
   const ux = dx / len;
   const uy = dy / len;
 
-  const ents = dynamicTargets(ctx);
+  const mx = (x1 + x2) * 0.5;
+  const my = (y1 + y2) * 0.5;
+  const ents = ctx.queryCircle(
+    mx,
+    my,
+    len * 0.5 + halfW + 1.2,
+    (e) => !e.isStatic && (e.kind === KIND.BLOCK || e.kind === KIND.PIG),
+  );
   for (let i = 0; i < ents.length; i++) {
     const e = ents[i];
     if (hitSet.has(e.id)) continue;
@@ -228,18 +237,24 @@ export default {
     holdTurn(ctx, 3.2);
 
     const bp = ctx.pos(bird);
-    const aim = resolveTarget(ctx, bird, target);
+    const tapPos = { x: bp.x, y: bp.y };
+    const tapRect = getActionRect(ctx);
+    const aim = resolveLocalTarget(ctx, tapPos, target);
 
-    // 1. Poison Nova (r = 7.8 m around Gale + target fortress cluster if tapped mid-air)
-    const all = dynamicTargets(ctx);
+    // 1. Poison Nova (r = 7.8 m around Gale + local target within findTargets default reach!)
+    const localAll = findLocalTargets(ctx, tapPos, {
+      kinds: [KIND.PIG, KIND.BLOCK],
+      max: 80,
+      fallbackBlocks: true,
+    });
     const poisoned = [];
     const seen = new Set();
 
-    for (let i = 0; i < all.length; i++) {
-      const e = all[i];
+    for (let i = 0; i < localAll.length; i++) {
+      const e = localAll[i];
       const p = ctx.pos(e);
       const nearBird = Math.hypot(p.x - bp.x, p.y - bp.y) <= NOVA_R;
-      const nearAim = Math.hypot(p.x - aim.x, p.y - aim.y) <= NOVA_R;
+      const nearAim = aim.hasTarget && Math.hypot(p.x - aim.x, p.y - aim.y) <= NOVA_R;
       if (!nearBird && !nearAim) continue;
       seen.add(e.id);
       e.status.poison = { dps: POISON_DPS, until: ctx.time + POISON_DUR };
@@ -262,7 +277,7 @@ export default {
 
     // Immediate VFX (< 16 ms): expanding magenta poison nova + live toxic aura on poisoned bodies!
     ctx.addEffect({ type: 'gale_nova', x: bp.x, y: bp.y, r: NOVA_R, ttl: 0.65 });
-    if (Math.hypot(aim.x - bp.x, aim.y - bp.y) > 3.2) {
+    if (aim.hasTarget && Math.hypot(aim.x - bp.x, aim.y - bp.y) > 3.2) {
       ctx.addEffect({ type: 'gale_nova', x: aim.x, y: aim.y, r: NOVA_R, ttl: 0.65 });
     }
     ctx.addEffect({
@@ -290,14 +305,15 @@ export default {
         } else if (!e.data._galeDeathSlashed) {
           e.data._galeDeathSlashed = true;
           const lp = e.data._galeLastPos || { x: aim.x, y: aim.y };
-          const nearby = dynamicTargets(
-            ctx,
-            (o) => {
-              const op = ctx.pos(o);
-              const d = Math.hypot(op.x - lp.x, op.y - lp.y);
-              return d > 0.2 && d <= 8.5;
-            },
-          );
+          const nearby = findLocalTargets(ctx, lp, {
+            kinds: [KIND.PIG, KIND.BLOCK],
+            max: 16,
+            fallbackBlocks: true,
+          }).filter((o) => {
+            const op = ctx.pos(o);
+            const d = Math.hypot(op.x - lp.x, op.y - lp.y);
+            return d > 0.2 && d <= MINI_RAY_LEN;
+          });
           let ang;
           if (nearby.length > 0) {
             const pick = nearby[Math.floor(ctx.rng() * nearby.length) % nearby.length];
@@ -335,38 +351,56 @@ export default {
       return anyAlivePoisoned && age < POISON_DUR + 0.3;
     });
 
-    // 3. 0.34 s later: 6 full-screen purple lightning slashes crisscrossing actionRect through targets!
+    // 3. 0.34 s later: 6 purple lightning slashes crossing actionRect() strictly through local targets!
     for (let s = 0; s < SLASH_COUNT; s++) {
       ctx.after(SLASH_DELAY + s * 0.055, () => {
-        const rect = ctx.actionRect();
-        const span = Math.hypot(rect.x1 - rect.x0 + 16, rect.y1 + 10);
-        const liveAll = dynamicTargets(ctx);
-        const pigs = liveAll.filter((e) => e.kind === KIND.PIG);
-        const ordered = [...pigs, ...liveAll.filter((e) => e.kind === KIND.BLOCK)];
+        const rect = tapRect;
+        const clipBox = { x0: rect.x0, x1: rect.x1, y0: rect.y0 ?? 0, y1: rect.y1 };
+        const span = Math.hypot(clipBox.x1 - clipBox.x0 + 8, clipBox.y1 + 8);
+        const pigs = findLocalTargets(ctx, tapPos, {
+          kinds: [KIND.PIG],
+          max: 30,
+          fallbackBlocks: false,
+        });
+        const blocks = findLocalTargets(ctx, tapPos, {
+          kinds: [KIND.BLOCK],
+          max: 50,
+          fallbackBlocks: false,
+        });
+        const ordered = [...pigs, ...blocks].filter((e) => {
+          const tp = ctx.pos(e);
+          return tp.x >= clipBox.x0 && tp.x <= clipBox.x1 && tp.y <= clipBox.y1;
+        });
 
-        let tx = aim.x;
-        let ty = aim.y;
+        let tx = clamp(aim.x, clipBox.x0 + 1, clipBox.x1 - 1);
+        let ty = clamp(aim.y, 1.0, clipBox.y1 - 1);
         if (ordered.length > 0) {
           const tgt = ordered[s % ordered.length];
           const tp = ctx.pos(tgt);
           tx = tp.x;
           ty = tp.y;
         } else {
-          tx = rect.x0 + ((s + 1) / (SLASH_COUNT + 1)) * (rect.x1 - rect.x0);
+          tx = clipBox.x0 + ((s + 1) / (SLASH_COUNT + 1)) * (clipBox.x1 - clipBox.x0);
           ty = 2.5 + (s % 3) * 2.0;
         }
 
-        // Crisscross dramatic diagonal angles spanning the ENTIRE screen
+        // Crisscross diagonal angles clipped strictly to actionRect()!
         const baseAngles = [-0.42, -2.68, 0.36, 2.74, -0.72, -2.42];
         const ang = baseAngles[s % baseAngles.length] + ctx.range(-0.08, 0.08);
         const ux = Math.cos(ang);
         const uy = Math.sin(ang);
-        const x1 = tx - ux * span * 0.55;
-        const y1 = ty - uy * span * 0.55;
-        const x2 = tx + ux * span * 0.55;
-        const y2 = ty + uy * span * 0.55;
+        const rawX1 = tx - ux * span;
+        const rawY1 = ty - uy * span;
+        const rawX2 = tx + ux * span;
+        const rawY2 = ty + uy * span;
+        const clipped = clipSegmentToRect(rawX1, rawY1, rawX2, rawY2, clipBox) || {
+          x1: clamp(rawX1, clipBox.x0, clipBox.x1),
+          y1: clamp(rawY1, clipBox.y0, clipBox.y1),
+          x2: clamp(rawX2, clipBox.x0, clipBox.x1),
+          y2: clamp(rawY2, clipBox.y0, clipBox.y1),
+        };
 
-        slashSegment(ctx, x1, y1, x2, y2, {
+        slashSegment(ctx, clipped.x1, clipped.y1, clipped.x2, clipped.y2, {
           dmg: SLASH_DMG,
           impulse: 16,
           halfW: 0.58,
@@ -378,10 +412,10 @@ export default {
           x: tx,
           y: ty,
           r: 4.5,
-          sx1: x1,
-          sy1: y1,
-          sx2: x2,
-          sy2: y2,
+          sx1: clipped.x1,
+          sy1: clipped.y1,
+          sx2: clipped.x2,
+          sy2: clipped.y2,
           mini: false,
           seed: (s + 1) * 37,
           ttl: 0.72,

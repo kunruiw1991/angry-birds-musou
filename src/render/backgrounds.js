@@ -601,8 +601,9 @@ export function drawBackground(g, cam, biome = 'grass', t = 0) {
   g.fillRect(0, 0, w, h);
 
   // 2. Celestial bodies (sun in desert, twinkling stars + glowing moon in night city)
+  const celScale = Math.max(0.55, Math.min(1.15, cam.s / 32));
   if (key === 'desert') {
-    const sx = w * 0.78, sy = h * 0.20, sr = Math.min(w, h) * 0.055;
+    const sx = w * 0.78, sy = h * 0.18, sr = Math.max(18, 38 * celScale);
     g.fillStyle = 'rgba(255, 248, 200, 0.24)';
     g.beginPath(); g.arc(sx, sy, sr * 2.3, 0, Math.PI * 2); g.fill();
     g.fillStyle = 'rgba(255, 245, 185, 0.45)';
@@ -616,7 +617,7 @@ export function drawBackground(g, cam, biome = 'grass', t = 0) {
       const tw = 0.48 + 0.52 * Math.sin(t * 2.4 + st.phase);
       g.globalAlpha = tw;
       g.fillStyle = '#ffffff';
-      const x = st.u * w, y = st.v * h;
+      const x = st.u * w, y = st.v * h * 0.88;
       if (st.sparkle) {
         const r = st.r * 1.8;
         g.fillRect(x - r, y - 0.7, r * 2, 1.4);
@@ -627,7 +628,7 @@ export function drawBackground(g, cam, biome = 'grass', t = 0) {
     }
     g.globalAlpha = 1;
     // Moon with glow
-    const mx = w * 0.80, my = h * 0.20, mr = Math.min(w, h) * 0.044;
+    const mx = w * 0.80, my = h * 0.18, mr = Math.max(15, 32 * celScale);
     g.fillStyle = 'rgba(200, 215, 255, 0.10)';
     g.beginPath(); g.arc(mx, my, mr * 2.8, 0, Math.PI * 2); g.fill();
     g.fillStyle = 'rgba(230, 240, 255, 0.22)';
@@ -636,20 +637,29 @@ export function drawBackground(g, cam, biome = 'grass', t = 0) {
     g.beginPath(); g.arc(mx, my, mr, 0, Math.PI * 2); g.fill();
   }
 
-  // 3. Cached parallax layers
+  // 3. Cached parallax layers (scaled harmoniously with world scale, flush with ground at rest)
   const assets = getBiomeAssets(key);
   const groundY = cam.sy(0);
-  const refGroundY = h * 0.88;
-  const pScale = Math.max(0.75, Math.min(1.45, h / 650));
+  const restGroundY = h - Math.min(2.0 * cam.s, 0.12 * h);
+  const skyLift = Math.max(0, groundY - restGroundY);
+  const pScale = Math.max(0.45, Math.min(1.38, cam.s / 33));
 
   const farParallax = key === 'city' ? 0.28 : 0.20;
   const midParallax = key === 'city' ? 0.48 : 0.40;
-  const farBottom = Math.min(h + 80, refGroundY + (groundY - refGroundY) * farParallax + 6);
-  const midBottom = Math.min(h + 100, refGroundY + (groundY - refGroundY) * midParallax + 6);
+  const baseHorizonY = Math.min(groundY, restGroundY);
+  const farBottom = Math.min(h + 140, baseHorizonY + skyLift * farParallax + 6);
+  const midBottom = Math.min(h + 140, baseHorizonY + skyLift * midParallax + 6);
 
   const worldScrollPx = cam.cx * cam.s;
   drawTiledParallax(g, assets.far, worldScrollPx * farParallax, farBottom, pScale);
   drawTiledParallax(g, assets.mid, worldScrollPx * midParallax, midBottom, pScale);
+
+  // Seamless horizon skirt between midBottom and groundY when camera is high in the sky
+  const groundTopFillY = Math.min(h, groundY + 2);
+  if (midBottom < groundTopFillY) {
+    g.fillStyle = key === 'desert' ? '#d9b25e' : key === 'city' ? '#271e59' : '#1f6c52';
+    g.fillRect(0, midBottom - 2, w, groundTopFillY - midBottom + 4);
+  }
 
   // 4. World-locked ground band (y <= 0)
   if (groundY < h + 4) {

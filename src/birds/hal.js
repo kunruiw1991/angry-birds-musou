@@ -5,7 +5,7 @@
 import { KIND } from '../contracts.js';
 import {
   TAU, clamp, hash01, holdTurn,
-  distributeTargets, emitBirdHit, makeHudIcon,
+  distributeTargets, emitBirdHit, makeHudIcon, drawSmoothRibbon,
   drawCartoonEyes, drawAngryBrows,
 } from './a_helpers.js';
 
@@ -232,8 +232,11 @@ const hal = {
     }
   },
 
-  onTap(ctx, bird, target) {
+  onTap(ctx, bird, _target) {
     const p = ctx.pos(bird);
+    const tapX = p.x;
+    const tapY = p.y;
+    const tapRect = ctx.actionRect();
     const v = ctx.vel(bird);
 
     // 1. Boomerang U-turn spin: vx -> -0.9 vx, vy >= +4.6
@@ -246,25 +249,24 @@ const hal = {
 
     bird.data.spinFx = ctx.addEffect({
       type: 'hal_spin',
-      x: p.x,
-      y: p.y,
+      x: tapX,
+      y: tapY,
       r: 1.45,
       ttl: 2.1,
     });
 
     ctx.sfx('eagle', { vol: 0.9, pitch: 1.0 });
     ctx.juice({ shake: 0.28, hitstop: 26, flash: { alpha: 0.16, color: '#d4ffb2' } });
-    emitBirdHit(ctx, 'hal', p.x, p.y, 20);
+    emitBirdHit(ctx, 'hal', tapX, tapY, 20);
 
     const totalDur = (HAL_TUNE.eagleCount - 1) * HAL_TUNE.eagleSpacing + HAL_TUNE.eagleSwoopDur + 0.5;
     holdTurn(ctx, totalDur);
 
-    // 2. Summon 8 Mighty Eagles (0.16 s apart; Eagle #0 spawns immediately at t = 0!)
+    // 2. Summon 8 Mighty Eagles (0.16 s apart; local to tap-time reach & actionRect per A1)
     const spawnEagle = (idx) => {
-      const rect = ctx.actionRect();
-      const targets = distributeTargets(ctx, p.x, p.y, HAL_TUNE.eagleCount, {
+      const targets = distributeTargets(ctx, tapX, tapY, HAL_TUNE.eagleCount, {
         aheadOnly: false,
-        explicitTarget: idx === 0 ? target : null,
+        rect: tapRect,
       });
       const tgt = targets[idx % targets.length];
       const tx = tgt.x;
@@ -272,11 +274,11 @@ const hal = {
       const isHighPig = tgt.ent && tgt.ent.kind === KIND.PIG && tgt.y > 3.2;
       const dipY = isHighPig ? clamp(tgt.y, 1.0, 9.5) : clamp(tgt.y, 1.0, 3.2);
 
-      // Quadratic Bezier swoop P(u) from upper-right sky -> (tx, dipY) at u=0.5 -> upper-left exit
-      const x0 = Math.max(rect.x1 + 5, tx + 17 + (idx % 3) * 2.4);
-      const y0 = Math.max(rect.y1 + 2.5, 17.5 + (idx % 2) * 2.2);
-      const x2 = Math.min(rect.x0 - 4, tx - 17 - (idx % 2) * 2.2);
-      const y2 = Math.max(rect.y1 + 1.0, 15.0 + (idx % 3) * 1.8);
+      // Quadratic Bezier swoop P(u) bounded cleanly around local actionRect
+      const x0 = Math.min(tapRect.x1 + 4.5, tx + 13 + (idx % 3) * 1.8);
+      const y0 = Math.max(tapRect.y1 + 2.0, 16.5 + (idx % 2) * 2.0);
+      const x2 = Math.max(tapRect.x0 - 4.5, tx - 13 - (idx % 2) * 1.8);
+      const y2 = Math.max(tapRect.y1 + 1.0, 14.5 + (idx % 3) * 1.6);
       const x1 = 2 * tx - 0.5 * (x0 + x2);
       const y1 = 2 * dipY - 0.5 * (y0 + y2);
 
@@ -317,13 +319,14 @@ const hal = {
         eagleFx.trail.push({ x: cx, y: cy, t: ctx.time });
         if (eagleFx.trail.length > 26) eagleFx.trail.shift();
 
-        // Swept collision query within 1.5 m of the eagle along its path
+        // Swept collision query within 1.5 m along local actionRect swoop
         const segLen = Math.hypot(cx - prevX, cy - prevY);
         const steps = Math.max(1, Math.ceil(segLen / 0.6));
         for (let s = 1; s <= steps; s++) {
           const su = s / steps;
           const qx = prevX + (cx - prevX) * su;
           const qy = prevY + (cy - prevY) * su;
+          if (qx < tapRect.x0 - 2.5 || qx > tapRect.x1 + 2.5) continue;
           const hits = ctx.queryCircle(qx, qy, HAL_TUNE.eagleHitR, (e) => !e.isStatic && (e.kind === KIND.BLOCK || e.kind === KIND.PIG));
           for (const e of hits) {
             if (hitIds.has(e.id)) continue;
@@ -390,44 +393,12 @@ const hal = {
 
     /** 3.5 m wingspan Mighty Eagle swoop + golden-emerald slipstream ribbons! */
     hal_eagle(g, e, t, cam) {
-      const pts = e.trail;
-      const win = 0.42;
-
       // 1. Twin glowing golden-emerald slipstream ribbons behind the swooping eagle
-      if (pts && pts.length >= 2) {
-        g.save();
-        g.lineCap = 'round';
-        for (let i = 0; i < pts.length - 1; i++) {
-          const p0 = pts[i], p1 = pts[i + 1];
-          const a = clamp(1 - (t - p1.t) / win, 0, 1);
-          if (a <= 0.02) continue;
-          const x0 = cam.sx(p0.x), y0 = cam.sy(p0.y);
-          const x1 = cam.sx(p1.x), y1 = cam.sy(p1.y);
-
-          // Rich emerald-gold outer wind ribbon (source-over pops on desert sky!)
-          g.strokeStyle = `rgba(90, 200, 50, ${(0.38 * a).toFixed(3)})`;
-          g.lineWidth = Math.max(7, 1.55 * cam.s * a);
-          g.beginPath();
-          g.moveTo(x0, y0);
-          g.lineTo(x1, y1);
-          g.stroke();
-
-          g.strokeStyle = `rgba(255, 185, 25, ${(0.65 * a).toFixed(3)})`;
-          g.lineWidth = Math.max(4, 0.90 * cam.s * a);
-          g.beginPath();
-          g.moveTo(x0, y0);
-          g.lineTo(x1, y1);
-          g.stroke();
-
-          g.strokeStyle = `rgba(255, 253, 235, ${(0.92 * a).toFixed(3)})`;
-          g.lineWidth = Math.max(2, 0.34 * cam.s * a);
-          g.beginPath();
-          g.moveTo(x0, y0);
-          g.lineTo(x1, y1);
-          g.stroke();
-        }
-        g.restore();
-      }
+      drawSmoothRibbon(g, cam, e.trail, t, 0.44, [
+        { color: '85, 200, 48', alpha: 0.45, widthM: 1.45, minPx: 7 },
+        { color: '255, 185, 25', alpha: 0.72, widthM: 0.82, minPx: 4 },
+        { color: '255, 253, 235', alpha: 0.95, widthM: 0.32, minPx: 2 },
+      ]);
 
       // 2. Mighty Eagle body & flapping wings while mid-swoop
       if (!e.done) {

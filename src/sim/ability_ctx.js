@@ -12,7 +12,8 @@
 //     spawnProjectile(s) -> PROJ ent (supports explode, onHit, sensor, pierce, hitsBlocksOnly)
 //     spawnClone(birdId, {x,y,vx,vy,r,dmgMul,ttl,gravityScale,...}) -> PROJ ent with skin 'bird:<id>'
 // - Queries & Damage:
-//     allEnts(filter?), queryCircle(x,y,r,filter?), findTargets({x,y,kinds,max,aheadOnly,fallbackBlocks}),
+//     allEnts(filter?), queryCircle(x,y,r,filter?),
+//     findTargets({x,y,kinds,max,maxDist=20,aheadOnly,fallbackBlocks}),
 //     explode(x,y,{r,dmg,impulse,source,power,fx}), damageRay(x1,y1,x2,y2,{dmg,impulse,width,source}),
 //     damageCircle(x,y,r,{dmg,impulse,source,filter}), damage(ent,amount,info)
 // - Physics & Body Mutation:
@@ -56,19 +57,36 @@ export function makeAbilityCtx(game) {
     pick: (arr) => W().rng.pick(arr),
     sign: () => W().rng.sign(),
 
-    /** Sim-defined "screen" rect for full-screen effects: union of structure bounds and the
-     *  current bird position, padded. Deterministic (independent of the real viewport). */
+    /** Bird's local "screen" rect (Design Amendment A1): x in [bx-6, bx+22] clipped to level bounds
+     *  (bx/by = live bird pos at call time, or last known if gone); y in [0, max(structureTop+5, by+6, 14)]. */
     actionRect() {
       const L = game.level;
-      const b = game.structureBounds || { x0: 10, x1: 40, y0: 0, y1: 12 };
-      const bird = game.bird && game.bird.alive ? game.bird.body.getPosition() : null;
-      let x0 = b.x0 - 4, x1 = b.x1 + 4;
-      if (bird) { x0 = Math.min(x0, bird.x - 4); x1 = Math.max(x1, bird.x + 6); }
+      let bx = 0, by = 2;
+      if (game.bird && game.bird.alive) {
+        const bp = game.bird.body.getPosition();
+        bx = bp.x; by = bp.y;
+        game.lastBirdPos = { x: bx, y: bp.y };
+      } else if (game.lastBirdPos) {
+        bx = game.lastBirdPos.x; by = game.lastBirdPos.y;
+      } else if (L && L.sling) {
+        const p = game.pouch();
+        bx = p.x; by = p.y;
+      }
+      const structureTop = game.structureBounds ? game.structureBounds.y1 : 8;
+      let x0 = bx - 6, x1 = bx + 22;
+      if (L && L.bounds) {
+        x0 = Math.max(L.bounds.x0, Math.min(L.bounds.x1, x0));
+        x1 = Math.max(L.bounds.x0, Math.min(L.bounds.x1, x1));
+        if (x1 - x0 < 8) {
+          if (x1 <= L.bounds.x0 + 8) { x0 = L.bounds.x0; x1 = Math.min(L.bounds.x1, L.bounds.x0 + 8); }
+          else { x1 = L.bounds.x1; x0 = Math.max(L.bounds.x0, L.bounds.x1 - 8); }
+        }
+      }
       return {
-        x0: L ? Math.max(L.bounds.x0, x0) : x0,
-        x1: L ? Math.min(L.bounds.x1, x1) : x1,
+        x0,
+        x1,
         y0: 0,
-        y1: Math.max(b.y1 + 6, 14),
+        y1: Math.max(structureTop + 5, by + 6, 14),
       };
     },
 
@@ -147,11 +165,35 @@ export function makeAbilityCtx(game) {
       return out;
     },
 
-    /** Targets sorted by distance from (x,y). kinds default ['pig']; falls back to blocks if no pigs. */
-    findTargets({ x, y, kinds = [KIND.PIG], max = 50, aheadOnly = false, fallbackBlocks = true } = {}) {
-      let list = W().ents.filter((e) => e.alive && kinds.includes(e.kind) && (!aheadOnly || e.body.getPosition().x >= x - 1));
-      if (!list.length && fallbackBlocks) list = W().ents.filter((e) => e.alive && e.kind === KIND.BLOCK);
-      const d2 = (e) => { const p = e.body.getPosition(); return (p.x - x) ** 2 + (p.y - y) ** 2; };
+    /** Targets within `maxDist` (default 20 m; pass Infinity to opt out) sorted by distance from (x,y).
+     *  kinds default ['pig']; falls back to blocks within `maxDist` if no matching targets in range. */
+    findTargets({ x, y, kinds = [KIND.PIG], max = 50, maxDist = 20, aheadOnly = false, fallbackBlocks = true } = {}) {
+      let ox = x, oy = y;
+      if (ox == null || oy == null) {
+        const bp = (game.bird && game.bird.alive) ? game.bird.body.getPosition() : (game.lastBirdPos || { x: 0, y: 2 });
+        if (ox == null) ox = bp.x;
+        if (oy == null) oy = bp.y;
+      }
+      const maxD2 = maxDist < Infinity ? maxDist * maxDist : Infinity;
+      const d2 = (e) => { const p = e.body.getPosition(); return (p.x - ox) ** 2 + (p.y - oy) ** 2; };
+      const ents = W().ents;
+      const list = [];
+      for (let i = 0; i < ents.length; i++) {
+        const e = ents[i];
+        if (!e.alive || !kinds.includes(e.kind)) continue;
+        const p = e.body.getPosition();
+        if (aheadOnly && p.x < ox - 1) continue;
+        if (d2(e) <= maxD2) list.push(e);
+      }
+      if (!list.length && fallbackBlocks) {
+        for (let i = 0; i < ents.length; i++) {
+          const e = ents[i];
+          if (!e.alive || e.kind !== KIND.BLOCK) continue;
+          const p = e.body.getPosition();
+          if (aheadOnly && p.x < ox - 1) continue;
+          if (d2(e) <= maxD2) list.push(e);
+        }
+      }
       list.sort((a, b) => d2(a) - d2(b) || a.id - b.id);
       return list.slice(0, max);
     },
@@ -264,7 +306,13 @@ export function makeAbilityCtx(game) {
 
     pos: (ent) => ent.body.getPosition(),
     vel: (ent) => ent.body.getLinearVelocity(),
-    removeEnt: (ent) => W().remove(ent),
+    removeEnt(ent) {
+      if (ent && ent === game.bird && ent.alive) {
+        const bp = ent.body.getPosition();
+        game.lastBirdPos = { x: bp.x, y: bp.y };
+      }
+      W().remove(ent);
+    },
     addEffect: (e) => W().addEffect(e),
     addTask: (fn, o) => W().addTask(fn, o),
     after: (s, fn) => W().after(s, fn),

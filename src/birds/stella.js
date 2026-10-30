@@ -4,12 +4,13 @@
 // (gravityScale -0.6..-0.75, damping 2, pink bubble per body), then all are hurled at the target
 // at 24..26 m/s with ×3..3.8 dmg for 1.5 s; gravity restored.
 
+import { KIND } from '../contracts.js';
 import {
   clamp,
   holdTurn,
   setGravityScale,
-  dynamicTargets,
-  resolveTarget,
+  findLocalTargets,
+  resolveLocalTarget,
   hash01,
   drawBirdIcon,
 } from './b_helpers.js';
@@ -199,21 +200,29 @@ export default {
     holdTurn(ctx, FLOAT_DUR + HURL_DUR + 0.5);
 
     const bp = ctx.pos(bird);
-    const aim = resolveTarget(ctx, bird, target);
+    const tapPos = { x: bp.x, y: bp.y };
+    // Design Amendment A1: pointer tap -> acquire from tap point; auto-aim -> from bird at tap time
+    const hasPointer = !!(target && Number.isFinite(target.x) && Number.isFinite(target.y));
+    const origin = hasPointer ? { x: target.x, y: target.y } : tapPos;
+    const resolved = resolveLocalTarget(ctx, origin, hasPointer ? target : null);
+    const aim = { x: resolved.x, y: resolved.y };
 
-    // Gather up to 60 dynamic blocks/pigs inside pink bubble field r = 7.15 m
-    // (around Stella + projected onto target fortress if tapped early in flight!)
-    const all = dynamicTargets(ctx);
-    const nearBird = all.filter((e) => {
+    // Gather up to 60 dynamic blocks/pigs strictly from findTargets default reach around origin
+    const localPool = findLocalTargets(ctx, origin, {
+      kinds: [KIND.PIG, KIND.BLOCK],
+      max: 80,
+      fallbackBlocks: true,
+    });
+    const nearBird = localPool.filter((e) => {
       const p = ctx.pos(e);
       return Math.hypot(p.x - bp.x, p.y - bp.y) <= FIELD_R;
     });
 
     let center = { x: bp.x, y: bp.y };
     let candidates = nearBird;
-    if (candidates.length < 18) {
+    if ((hasPointer || resolved.hasTarget) && candidates.length < 18) {
       const seen = new Set(nearBird.map((e) => e.id));
-      const nearAim = all.filter((e) => {
+      const nearAim = localPool.filter((e) => {
         if (seen.has(e.id)) return false;
         const p = ctx.pos(e);
         return Math.hypot(p.x - aim.x, p.y - aim.y) <= FIELD_R;
@@ -313,12 +322,11 @@ export default {
       return age < FLOAT_DUR + 0.85;
     });
 
-    // Phase 2 at FLOAT_DUR (0.72 s): HURL all captured bodies at target at 24..26 m/s with ×3..3.8 dmg!
+    // Phase 2 at FLOAT_DUR (0.72 s): HURL all captured bodies at local target at 26 m/s with ×3.8 dmg!
     ctx.after(FLOAT_DUR, () => {
       if (bird.alive) setGravityScale(ctx, bird, 1);
-      const hurlAim = target ? aim : resolveTarget(ctx, bird, null, { preferAhead: false });
-      const tx = hurlAim.x;
-      const ty = Math.max(0.65, hurlAim.y);
+      const tx = aim.x;
+      const ty = Math.max(0.65, aim.y);
 
       for (let i = 0; i < captured.length; i++) {
         const e = captured[i];

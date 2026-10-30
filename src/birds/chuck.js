@@ -5,7 +5,7 @@
 import { KIND } from '../contracts.js';
 import {
   TAU, clamp, hash01, holdTurn, setSensor, setGravityScale,
-  distributeTargets, pickPrimaryTarget, emitBirdHit, makeHudIcon,
+  distributeTargets, pickPrimaryTarget, emitBirdHit, makeHudIcon, drawSmoothRibbon,
   drawCartoonEyes, drawAngryBrows, drawCartoonBeak,
 } from './a_helpers.js';
 
@@ -18,7 +18,7 @@ export const CHUCK_TUNE = Object.freeze({
   laserCount: 12,         // spec 12
   laserWindow: 0.56,      // spec 0.5 s (+12%)
   laserJitterDeg: 4.0,    // spec ±4°
-  laserLen: 48,           // spec 45 m (+6.7%)
+  laserLen: 32,           // spec 45 m (-28.9% within ±30%, A1 local reach)
   laserDmg: 115,          // spec 90 (+27.8%)
   laserImpulse: 3.9,      // spec 3 (+30%)
   laserGlowTtl: 0.45,     // spec 0.35 s (+28.6%)
@@ -119,39 +119,34 @@ const chuck = {
 
   onStep(_ctx, _bird, _dt) {},
 
-  onTap(ctx, bird, target) {
+  onTap(ctx, bird, _target) {
     const origin = ctx.pos(bird);
     const ox = origin.x;
     const oy = origin.y;
+    const tapRect = ctx.actionRect();
     const v = ctx.vel(bird);
     const curSpd = Math.hypot(v.x, v.y);
     const dashSpd = Math.max(CHUCK_TUNE.dashMinSpeed, curSpd * CHUCK_TUNE.dashSpeedMul);
 
-    // Compute smart dash vector: explicit target if tapped, else blend velocity toward structure ahead
-    const prim = pickPrimaryTarget(ctx, ox, oy, target);
+    // Compute dash vector within default local reach from bird at tap time (Amendment A1)
+    const prim = pickPrimaryTarget(ctx, ox, oy, { rect: tapRect });
+    const tdx = prim.x - ox;
+    const tdy = prim.y - oy;
+    const td = Math.hypot(tdx, tdy) || 1;
+    const tux = tdx / td;
+    const tuy = tdy / td;
     let ux, uy;
-    if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) {
-      const d = Math.hypot(target.x - ox, target.y - oy) || 1;
-      ux = (target.x - ox) / d;
-      uy = (target.y - oy) / d;
+    if (curSpd > 4 && v.x > 2 && oy < 8.5) {
+      const vux = v.x / curSpd;
+      const vuy = v.y / curSpd;
+      const bx = vux * 0.45 + tux * 0.55;
+      const by = vuy * 0.45 + tuy * 0.55;
+      const bd = Math.hypot(bx, by) || 1;
+      ux = bx / bd;
+      uy = by / bd;
     } else {
-      const tdx = prim.x - ox;
-      const tdy = prim.y - oy;
-      const td = Math.hypot(tdx, tdy) || 1;
-      const tux = tdx / td;
-      const tuy = tdy / td;
-      if (curSpd > 4 && v.x > 2 && oy < 8.5) {
-        const vux = v.x / curSpd;
-        const vuy = v.y / curSpd;
-        const bx = vux * 0.45 + tux * 0.55;
-        const by = vuy * 0.45 + tuy * 0.55;
-        const bd = Math.hypot(bx, by) || 1;
-        ux = bx / bd;
-        uy = by / bd;
-      } else {
-        ux = tux;
-        uy = tuy;
-      }
+      ux = tux;
+      uy = tuy;
     }
 
     // Enter piercing sensor dash mode
@@ -185,12 +180,15 @@ const chuck = {
 
     holdTurn(ctx, 1.8);
 
-    // Swept piercing dash task (0.60 s)
+    // Swept piercing dash task (0.60 s, bounded to local actionRect + level bounds)
     const piercedIds = new Set();
     let prevX = ox;
     let prevY = oy;
     let dashEnded = false;
-    const xBoundMax = (ctx.level && ctx.level.bounds ? ctx.level.bounds.x1 : 70) - 2.5;
+    const xBoundMax = Math.min(
+      (ctx.level && ctx.level.bounds ? ctx.level.bounds.x1 : 70) - 2.5,
+      tapRect.x1 + 5.0,
+    );
 
     const finishDash = () => {
       if (dashEnded) return;
@@ -256,14 +254,14 @@ const chuck = {
       return true;
     });
 
-    // Fire 12 piercing 48 m lasers from the dash origin (ox, oy) over 0.56 s
+    // Fire 12 piercing 32 m lasers from the dash origin (ox, oy) over 0.56 s (local reach per A1)
     const nLasers = CHUCK_TUNE.laserCount;
     for (let i = 0; i < nLasers; i++) {
       const delay = 0.015 + (i / Math.max(1, nLasers - 1)) * CHUCK_TUNE.laserWindow;
       ctx.after(delay, () => {
         const targets = distributeTargets(ctx, ox, oy, nLasers, {
           aheadOnly: true,
-          explicitTarget: i === 0 ? target : null,
+          rect: tapRect,
         });
         const tgt = targets[i % targets.length];
         const baseAng = Math.atan2(tgt.y - oy, tgt.x - ox);
@@ -416,42 +414,24 @@ const chuck = {
       g.restore();
     },
 
-    /** Supersonic golden Mach streak + afterimage cones along Chuck's piercing dash. */
+    /** Supersonic golden Mach streak + shockwave cone along Chuck's piercing dash. */
     chuck_dash(g, e, t, cam) {
       const pts = e.pts;
       if (!pts || pts.length < 2) return;
-      const win = 0.65;
 
-      g.save();
-      g.globalCompositeOperation = 'lighter';
-      g.lineCap = 'round';
-
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i], p1 = pts[i + 1];
-        const a = clamp(1 - (t - p1.t) / win, 0, 1);
-        if (a <= 0.02) continue;
-        const x0 = cam.sx(p0.x), y0 = cam.sy(p0.y);
-        const x1 = cam.sx(p1.x), y1 = cam.sy(p1.y);
-
-        g.strokeStyle = `rgba(255, 215, 20, ${(0.62 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(4, 0.72 * cam.s * a);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-
-        g.strokeStyle = `rgba(255, 255, 230, ${(0.9 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(1.6, 0.24 * cam.s * a);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-      }
+      drawSmoothRibbon(g, cam, pts, t, 0.65, [
+        { color: '255, 165, 0', alpha: 0.68, widthM: 0.82, minPx: 5 },
+        { color: '255, 232, 15', alpha: 0.88, widthM: 0.46, minPx: 3 },
+        { color: '255, 255, 240', alpha: 0.96, widthM: 0.18, minPx: 1.6 },
+      ]);
 
       // Mach V-cone at head if still fresh
       const head = pts[pts.length - 1];
       const ha = clamp(1 - (t - head.t) / 0.25, 0, 1);
       if (ha > 0.05) {
+        g.save();
+        g.globalCompositeOperation = 'lighter';
+        g.lineCap = 'round';
         const hx = cam.sx(head.x), hy = cam.sy(head.y);
         g.translate(hx, hy);
         g.rotate(-head.a);
@@ -462,8 +442,8 @@ const chuck = {
         g.lineTo(0.8 * cam.s, 0);
         g.lineTo(-1.3 * cam.s, 0.95 * cam.s);
         g.stroke();
+        g.restore();
       }
-      g.restore();
     },
 
     /** Electric yellow-white burst spark on pierced blocks. */

@@ -31,11 +31,14 @@ export function installSeam(app) {
       });
       game.score = 0; game._dmgScoreCarry = 0; game.stars = 0; game.combo = 0; game._lastKillT = -99;
       game.queue = ['red']; game.birdIndex = 0; game.birdsUsed = 0; game.bird = null;
+      game.lastBirdPos = { x: 0, y: 2 };
       game.abilityUsed = false; game.holdUntilT = 0;
       game.flightT = 0; game.restT = 0; game.clearT = null; game.turnT = 0; game.settleT = 0;
       game.firstPigKillT = null; game.launchT = null; game.abilityT = null;
       game.events = [];
       game.initialPose = new Map();
+      game.settleStats = { moved: 0, maxDrift: 0, maxRot: 0 };
+      game._settleOffenders = [];
       game.pigsAtStart = 0; game.blocksAtStart = 0;
       game.structureBounds = { x0: 10, x1: 30, y0: 0, y1: 10 };
       w.damageEnabled = !!damageEnabled;
@@ -75,6 +78,12 @@ export function installSeam(app) {
     listEnts() {
       if (!game.world) return [];
       return game.world.ents.filter((e) => e.alive).map(cloneEnt);
+    },
+    settleReport() {
+      return clone({
+        ...(game.settleStats || { moved: 0, maxDrift: 0, maxRot: 0 }),
+        offenders: game._settleOffenders || [],
+      });
     },
   });
 

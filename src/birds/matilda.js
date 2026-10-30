@@ -4,7 +4,7 @@
 
 import {
   TAU, clamp, holdTurn, setGravityScale, guardExplosiveProj,
-  distributeTargets, emitBirdHit, makeHudIcon,
+  distributeTargets, emitBirdHit, makeHudIcon, drawSmoothRibbon,
   drawCartoonEyes, drawAngryBrows, drawCartoonBeak,
 } from './a_helpers.js';
 
@@ -154,6 +154,12 @@ const matilda = {
 
   onTap(ctx, bird, target) {
     const p0 = ctx.pos(bird);
+    const tapRect = ctx.actionRect();
+    // Amendment A1: pointer/tap-aimed bird acquires targets from tap point (or bird at tap time if auto)
+    const hasTapPoint = !!(target && Number.isFinite(target.x) && Number.isFinite(target.y) && target.x >= p0.x - 2);
+    const anchorX = hasTapPoint ? target.x : p0.x;
+    const anchorY = hasTapPoint ? target.y : p0.y;
+
     bird.data.shooting = true;
     setGravityScale(ctx, bird, 0);
     bird.body.setAngularVelocity(0);
@@ -163,8 +169,8 @@ const matilda = {
       type: 'matilda_aura',
       x: p0.x,
       y: p0.y,
-      tx: target ? target.x : p0.x + 12,
-      ty: target ? target.y : 2.0,
+      tx: hasTapPoint ? target.x : p0.x + 12,
+      ty: hasTapPoint ? target.y : 2.0,
       ttl: MATILDA_TUNE.shootDur + 0.2,
     });
 
@@ -180,21 +186,21 @@ const matilda = {
     let curAutoTarget = null;
     let retargetCycle = 0;
 
-    const pickAimPoint = (bx, by) => {
+    const pickAimPoint = (bx) => {
       // 1. Live held pointer has top priority
       if (ctx.pointer && ctx.pointer.down && Number.isFinite(ctx.pointer.x) && Number.isFinite(ctx.pointer.y)) {
         return { x: ctx.pointer.x, y: Math.max(0.3, ctx.pointer.y) };
       }
-      // 2. Explicit tap target for the first burst of 5 eggs
-      if (eggsFired < MATILDA_TUNE.retargetEvery && target && Number.isFinite(target.x) && Number.isFinite(target.y)) {
+      // 2. Explicit tap target for the first burst of eggs
+      if (eggsFired < MATILDA_TUNE.retargetEvery && hasTapPoint) {
         return { x: target.x, y: Math.max(0.4, target.y) };
       }
-      // 3. Auto-aim nearest pigs / surviving blocks, retargeting every 5 eggs or when current target dies
+      // 3. Auto-aim within default findTargets reach from tap anchor (no level-wide homing per A1)
       const needRetarget = !curAutoTarget
         || (eggsFired % MATILDA_TUNE.retargetEvery === 0)
         || (curAutoTarget.ent && !curAutoTarget.ent.alive);
       if (needRetarget) {
-        const list = distributeTargets(ctx, bx, by, 10, { aheadOnly: false });
+        const list = distributeTargets(ctx, anchorX, anchorY, 10, { aheadOnly: false, rect: tapRect });
         curAutoTarget = list[retargetCycle % list.length];
         retargetCycle++;
       }
@@ -208,7 +214,7 @@ const matilda = {
     const fireOneEgg = () => {
       if (!bird.alive) return;
       const bp = ctx.pos(bird);
-      const aim = pickAimPoint(bp.x, bp.y);
+      const aim = pickAimPoint(bp.x);
       auraFx.tx = aim.x;
       auraFx.ty = aim.y;
 
@@ -406,32 +412,11 @@ const matilda = {
 
     /** Bright pearl-gold streak trailing each fired explosive egg. */
     matilda_trail(g, e, t, cam) {
-      const pts = e.pts;
-      if (!pts || pts.length < 2) return;
-      const win = 0.38;
-      g.save();
-      g.lineCap = 'round';
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i], p1 = pts[i + 1];
-        const a = clamp(1 - (t - p1.t) / win, 0, 1);
-        if (a <= 0.02) continue;
-        const x0 = cam.sx(p0.x), y0 = cam.sy(p0.y);
-        const x1 = cam.sx(p1.x), y1 = cam.sy(p1.y);
-        g.strokeStyle = `rgba(255, 165, 25, ${(0.60 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(4, 0.46 * cam.s * a);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-
-        g.strokeStyle = `rgba(255, 253, 240, ${(0.95 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(2, 0.21 * cam.s * a);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-      }
-      g.restore();
+      drawSmoothRibbon(g, cam, e.pts, t, 0.38, [
+        { color: '255, 155, 20', alpha: 0.72, widthM: 0.42, minPx: 4 },
+        { color: '255, 225, 115', alpha: 0.88, widthM: 0.26, minPx: 2.5 },
+        { color: '255, 253, 242', alpha: 0.96, widthM: 0.13, minPx: 1.5 },
+      ]);
     },
 
     /** Golden-white yolk shockwave burst on egg detonation. */

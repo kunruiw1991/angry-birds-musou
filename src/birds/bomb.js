@@ -6,7 +6,7 @@
 import { KIND } from '../contracts.js';
 import {
   TAU, clamp, hash01, holdTurn, setSensor, guardExplosiveProj,
-  distributeTargets, emitBirdHit, makeHudIcon,
+  distributeTargets, emitBirdHit, makeHudIcon, drawSmoothRibbon,
   drawCartoonEyes, drawAngryBrows, drawCartoonBeak,
 } from './a_helpers.js';
 
@@ -207,6 +207,10 @@ function triggerMegaBlast(ctx, bird) {
       type: 'bomb_tnt_trail',
       x: sx,
       y: sy,
+      angle: ang,
+      w: 0.78,
+      h: 0.78,
+      alive: true,
       pts: [{ x: sx, y: sy, t: ctx.time }],
       ttl: 2.0,
     });
@@ -231,6 +235,7 @@ function triggerMegaBlast(ctx, bird) {
       bullet: true,
       explode: null,
       onHit: (ent) => {
+        trail.alive = false;
         const cp = ctx.pos(ent);
         ctx.addEffect({ type: 'bomb_blast_ring', x: cp.x, y: cp.y, r: BOMB_TUNE.tntBlastR, ttl: 0.45 });
       },
@@ -244,7 +249,10 @@ function triggerMegaBlast(ctx, bird) {
     let aliveCount = 0;
     for (const item of crates) {
       const c = item.crate;
-      if (!c || !c.alive) continue;
+      if (!c || !c.alive) {
+        item.trail.alive = false;
+        continue;
+      }
       if (!item.armed && age >= 0.14) {
         item.armed = true;
         c.data.hits = 0;
@@ -256,11 +264,16 @@ function triggerMegaBlast(ctx, bird) {
         };
         setSensor(ctx, c, false);
       }
-      if (item.armed && guardExplosiveProj(ctx, c, 0.05)) continue;
+      if (item.armed && guardExplosiveProj(ctx, c, 0.05)) {
+        item.trail.alive = false;
+        continue;
+      }
       aliveCount++;
       const cp = ctx.pos(c);
       item.trail.x = cp.x;
       item.trail.y = cp.y;
+      item.trail.angle = c.body.getAngle();
+      item.trail.alive = true;
       item.trail.pts.push({ x: cp.x, y: cp.y, t: now });
       if (item.trail.pts.length > 18) item.trail.pts.shift();
     }
@@ -331,41 +344,41 @@ const bomb = {
     bird.data.prevVel = { x: v.x, y: v.y };
   },
 
-  onTap(ctx, bird, target) {
+  onTap(ctx, bird, _target) {
     const p = ctx.pos(bird);
+    const tapX = p.x;
+    const tapY = p.y;
     bird.data.tapped = true;
     bird.data.charging = true;
-    bird.data.lastPos = { x: p.x, y: p.y };
+    bird.data.lastPos = { x: tapX, y: tapY };
 
     // Pulsing blast-warning sphere around Bomb (matches bomb_b.jpg!)
     bird.data.chargeFx = ctx.addEffect({
       type: 'bomb_charge',
-      x: p.x,
-      y: p.y,
+      x: tapX,
+      y: tapY,
       r: BOMB_TUNE.megaR * 0.72,
       ttl: BOMB_TUNE.megaDelay + 0.08,
     });
 
     holdTurn(ctx, BOMB_TUNE.megaDelay + 2.6);
 
-    // 24 random explosions across actionRect over 0.0 .. 0.74 s (blast #0 fires immediately at t=0!)
+    // 24 explosions across local actionRect over 0.0 .. 0.72 s (Amendment A1: local reach + actionRect)
     const nBlasts = BOMB_TUNE.randomCount;
     for (let i = 0; i < nBlasts; i++) {
       const delay = i === 0 ? 0 : (i / (nBlasts - 1)) * BOMB_TUNE.randomWindow;
       const fireBlast = () => {
         const rect = ctx.actionRect();
+        const xLo = rect.x0 + 1.2;
+        const xHi = Math.max(xLo + 1.0, rect.x1 - 1.2);
         let bx, by;
-        // Blend full-screen random explosions with structure-targeted blasts for guaranteed chaos + G5
-        if (i === 0 && target && Number.isFinite(target.x)) {
-          bx = target.x;
-          by = Math.max(0.8, target.y);
-        } else if (i % 3 !== 2) {
-          const tgts = distributeTargets(ctx, p.x, p.y, nBlasts, { aheadOnly: false });
+        if (i % 3 !== 2) {
+          const tgts = distributeTargets(ctx, tapX, tapY, nBlasts, { aheadOnly: false, rect });
           const tgt = tgts[i % tgts.length];
-          bx = tgt.x + ctx.range(-2.2, 2.2);
-          by = Math.max(0.7, tgt.y + ctx.range(-1.4, 2.4));
+          bx = clamp(tgt.x + ctx.range(-2.0, 2.0), xLo, xHi);
+          by = Math.max(0.7, tgt.y + ctx.range(-1.3, 2.2));
         } else {
-          bx = ctx.range(rect.x0 + 1.5, rect.x1 - 1.5);
+          bx = ctx.range(xLo, xHi);
           by = ctx.range(0.9, Math.max(5.5, rect.y1 - 2.0));
         }
 
@@ -511,26 +524,21 @@ const bomb = {
       g.restore();
     },
 
-    /** Orange-gold spark arcs trailing each radially flung TNT crate. */
+    /** Orange-gold spark ribbon + crisp TNT crate overlay over mega-explosion smoke! */
     bomb_tnt_trail(g, e, t, cam) {
-      const pts = e.pts;
-      if (!pts || pts.length < 2) return;
-      const win = 0.45;
-      g.save();
-      g.globalCompositeOperation = 'lighter';
-      g.lineCap = 'round';
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i], p1 = pts[i + 1];
-        const a = clamp(1 - (t - p1.t) / win, 0, 1);
-        if (a <= 0.02) continue;
-        g.strokeStyle = `rgba(255, 145, 30, ${(0.62 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(2.5, 0.36 * cam.s * a);
-        g.beginPath();
-        g.moveTo(cam.sx(p0.x), cam.sy(p0.y));
-        g.lineTo(cam.sx(p1.x), cam.sy(p1.y));
-        g.stroke();
+      drawSmoothRibbon(g, cam, e.pts, t, 0.45, [
+        { color: '255, 95, 10', alpha: 0.72, widthM: 0.44, minPx: 4 },
+        { color: '255, 205, 55', alpha: 0.88, widthM: 0.24, minPx: 2.2 },
+        { color: '255, 252, 225', alpha: 0.94, widthM: 0.10, minPx: 1.3 },
+      ]);
+      if (e.alive) {
+        g.save();
+        g.translate(cam.sx(e.x), cam.sy(e.y));
+        g.rotate(-(e.angle || 0));
+        g.scale(cam.s, cam.s);
+        drawTntCrate(g, { w: e.w || 0.78, h: e.h || 0.78 }, t);
+        g.restore();
       }
-      g.restore();
     },
   },
 };

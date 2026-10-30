@@ -81,6 +81,15 @@ def is_bird_stubbed(bird_id: str) -> bool:
   return 'STUB by opus-director' in txt
 
 
+def is_hud_skeleton() -> bool:
+  path = os.path.join(REPO_ROOT, 'src', 'ui', 'hud.js')
+  if not os.path.exists(path):
+    return True
+  with open(path, 'r', encoding='utf-8') as f:
+    txt = f.read()
+  return 'SKELETON by opus-director' in txt
+
+
 class QASession:
   """Context-managed wrapper over tests/cdp.py Browser with input & error helpers."""
 

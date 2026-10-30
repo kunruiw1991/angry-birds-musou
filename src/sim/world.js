@@ -594,8 +594,9 @@ export class SimWorld {
       const e = this.ents[i];
       if (e.body.isDynamic()) {
         savedDamp.push([e, e.body.getLinearDamping(), e.body.getAngularDamping()]);
-        e.body.setLinearDamping(Math.max(e.body.getLinearDamping(), 0.8));
-        e.body.setAngularDamping(Math.max(e.body.getAngularDamping(), 2.0));
+        e.body.setLinearDamping(Math.max(e.body.getLinearDamping(), 0.15));
+        const ad = e.shape === 'circle' ? 3.0 : 0.3;
+        e.body.setAngularDamping(Math.max(e.body.getAngularDamping(), ad));
       }
     }
     for (let i = 0; i < steps; i++) this.pl.step(PHYS.DT, 12, 6);

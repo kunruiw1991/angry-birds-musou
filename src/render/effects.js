@@ -143,15 +143,15 @@ export const GENERIC_EFFECTS = {
       }
     }
 
-    // 3. Searing white-yellow core (strongest in first ~60-150 ms, exact video flash!)
-    if (k < 0.45) {
-      const ck = k / 0.45;
-      const coreScale = age < 0.065 ? 1.08 : (1 - ck * 0.88);
-      const coreR = R * (isMega ? 0.52 : 0.44) * Math.max(0.05, coreScale);
-      g.globalAlpha = clamp01(1 - ck * 0.9);
-      g.fillStyle = '#fff280';
+    // 3. Searing white-yellow core (strongest in first ~60-150 ms, stays glowing inside fireball)
+    if (k < 0.66) {
+      const ck = k / 0.66;
+      const coreScale = age < 0.075 ? 1.10 : (1 - ck * 0.82);
+      const coreR = R * (isMega ? 0.50 : 0.44) * Math.max(0.06, coreScale);
+      g.globalAlpha = clamp01(1.05 - ck * 0.92);
+      g.fillStyle = '#fff275';
       g.beginPath();
-      g.arc(sx, sy, coreR * 1.22, 0, Math.PI * 2);
+      g.arc(sx, sy, coreR * 1.24, 0, Math.PI * 2);
       g.fill();
 
       g.fillStyle = '#ffffff';

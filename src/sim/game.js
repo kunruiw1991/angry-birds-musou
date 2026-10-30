@@ -26,6 +26,9 @@ export class Game {
     this.combo = 0;
     this._lastKillT = -99;
     this.holdUntilT = 0;
+    this.lastBirdPos = { x: 0, y: 2 };
+    this.settleStats = { moved: 0, maxDrift: 0, maxRot: 0 };
+    this._settleOffenders = [];
     this._bestByLevel = new Map();
     this.pointer = { x: 0, y: 0, down: false };  // world-space pointer, written by ui/input.js (白公主 aiming)
   }
@@ -56,6 +59,7 @@ export class Game {
     this.combo = 0;
     this._lastKillT = -99;
     this.holdUntilT = 0;
+    this.lastBirdPos = this.pouch();
     this.queue = (birds && birds.length ? birds : L.birds).slice();
     this.birdIndex = 0;
     this.birdsUsed = 0;
@@ -99,7 +103,46 @@ export class Game {
       if (p.balloon) e.status.balloon = true;
     }
 
+    const authoredPose = [];
+    for (let i = 0; i < w.ents.length; i++) {
+      const e = w.ents[i];
+      if (e.kind === KIND.BLOCK || e.kind === KIND.PIG) {
+        const p = e.body.getPosition();
+        authoredPose.push({ id: e.id, kind: e.kind, mat: e.mat, x: p.x, y: p.y, a: e.body.getAngle() });
+      }
+    }
+
     w.settleAndSleep(PHYS.SETTLE_STEPS);
+
+    let settleMoved = 0, maxDrift = 0, maxRot = 0;
+    const settleOffenders = [];
+    for (let i = 0; i < authoredPose.length; i++) {
+      const ap = authoredPose[i];
+      const e = w.byId.get(ap.id);
+      if (!e || !e.alive) {
+        settleMoved++;
+        settleOffenders.push({ id: ap.id, kind: ap.kind, mat: ap.mat, x0: +ap.x.toFixed(3), y0: +ap.y.toFixed(3), drift: 999, rot: 0 });
+        continue;
+      }
+      const p = e.body.getPosition();
+      const a = e.body.getAngle();
+      const drift = Math.hypot(p.x - ap.x, p.y - ap.y);
+      const rot = Math.abs(Math.atan2(Math.sin(a - ap.a), Math.cos(a - ap.a)));
+      if (drift > maxDrift) maxDrift = drift;
+      if (rot > maxRot) maxRot = rot;
+      if (drift > 0.10 || rot > 0.05) {
+        settleMoved++;
+        settleOffenders.push({
+          id: ap.id, kind: ap.kind, mat: ap.mat,
+          x0: +ap.x.toFixed(3), y0: +ap.y.toFixed(3), a0: +ap.a.toFixed(3),
+          x1: +p.x.toFixed(3), y1: +p.y.toFixed(3), a1: +a.toFixed(3),
+          drift: +drift.toFixed(4), rot: +rot.toFixed(4),
+        });
+      }
+    }
+    this.settleStats = { moved: settleMoved, maxDrift: +maxDrift.toFixed(4), maxRot: +maxRot.toFixed(4) };
+    this._settleOffenders = settleOffenders;
+
     this.structureBounds = computeBounds(w.ents);
     this.initialPose = new Map();
     for (let i = 0; i < w.ents.length; i++) {
@@ -152,6 +195,7 @@ export class Game {
     });
     bird.data.birdId = def.id;
     this.bird = bird;
+    this.lastBirdPos = { x, y };
     this.abilityUsed = false;
     this.holdUntilT = 0;
     this.flightT = 0; this.restT = 0; this.turnT = 0;
@@ -173,7 +217,8 @@ export class Game {
     if (!def || !def.onTap) return false;
     this.abilityUsed = true;
     this.abilityT = +this.world.time.toFixed(4);
-    const p = this.bird.alive ? this.bird.body.getPosition() : (target || { x: 0, y: 0 });
+    const p = this.bird.alive ? this.bird.body.getPosition() : (this.lastBirdPos || target || { x: 0, y: 0 });
+    if (this.bird.alive) this.lastBirdPos = { x: p.x, y: p.y };
     this._log('ability', { bird: def.id });
     bus.emit(EV.ABILITY, { birdId: def.id, x: p.x, y: p.y, name: def.ability });
     try { def.onTap(this.ctx, this.bird, target); } catch (err) { console.error('[onTap]', err); }
@@ -199,6 +244,10 @@ export class Game {
 
     // Bird module per-step hook while flight is active.
     if (this.state === STATE.FLIGHT && this.bird) {
+      if (this.bird.alive) {
+        const bp = this.bird.body.getPosition();
+        this.lastBirdPos = { x: bp.x, y: bp.y };
+      }
       const def = BIRDS[this.bird.data.birdId];
       if (def && def.onStep) {
         try { def.onStep(this.ctx, this.bird, dt); } catch (err) { console.error('[onStep]', err); }
@@ -206,6 +255,10 @@ export class Game {
     }
 
     w.step(dt);
+    if (this.bird && this.bird.alive) {
+      const bp = this.bird.body.getPosition();
+      this.lastBirdPos = { x: bp.x, y: bp.y };
+    }
 
     // Check last-pig-dead celebration trigger before turn/settle auto-transitions.
     const pigsLeft = w.pigs().length;
@@ -263,7 +316,11 @@ export class Game {
 
   _endTurn(reason) {
     const w = this.world;
-    if (this.bird && this.bird.alive) w.remove(this.bird);
+    if (this.bird && this.bird.alive) {
+      const bp = this.bird.body.getPosition();
+      this.lastBirdPos = { x: bp.x, y: bp.y };
+      w.remove(this.bird);
+    }
     this.bird = null;
     this.holdUntilT = 0;
     const pigsLeft = w.pigs().length;
@@ -477,6 +534,9 @@ export class Game {
       blocksAtStart: this.blocksAtStart,
       blocksLeft,
       displaced: this.displacedCount(),
+      settle: this.settleStats
+        ? { moved: this.settleStats.moved, maxDrift: this.settleStats.maxDrift }
+        : { moved: 0, maxDrift: 0 },
       bodies: liveBodies,
       awake: w.countAwake(),
       projectiles,

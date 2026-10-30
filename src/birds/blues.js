@@ -4,7 +4,7 @@
 
 import {
   TAU, clamp, holdTurn, spawnBirdClone, guardExplosiveProj,
-  distributeTargets, pickPrimaryTarget, emitBirdHit, makeHudIcon,
+  distributeTargets, pickPrimaryTarget, emitBirdHit, makeHudIcon, drawSmoothRibbon,
   drawCartoonEyes, drawAngryBrows, drawCartoonBeak,
 } from './a_helpers.js';
 
@@ -118,13 +118,16 @@ const blues = {
 
   onStep(_ctx, _bird, _dt) {},
 
-  onTap(ctx, bird, target) {
+  onTap(ctx, bird, _target) {
     const p = ctx.pos(bird);
+    const tapX = p.x;
+    const tapY = p.y;
+    const tapRect = ctx.actionRect();
     let v = ctx.vel(bird);
     if (Math.hypot(v.x, v.y) < 7) {
-      const prim = pickPrimaryTarget(ctx, p.x, p.y, target);
-      const dx = prim.x - p.x;
-      const dy = prim.y - p.y + 2.0;
+      const prim = pickPrimaryTarget(ctx, tapX, tapY, { rect: tapRect });
+      const dx = prim.x - tapX;
+      const dy = prim.y - tapY + 2.0;
       const d = Math.hypot(dx, dy) || 1;
       v = { x: (dx / d) * 16, y: (dy / d) * 16 };
       ctx.setVelocity(bird, v.x, v.y);
@@ -196,22 +199,21 @@ const blues = {
       return age < 2.4 || liveMeteors.length > 0;
     });
 
-    // Stagger 13 sky meteors over 0.20 .. 0.98 s
+    // Stagger 13 sky meteors over 0.20 .. 0.98 s (local to tap-time reach & actionRect per A1)
     const nMet = BLUES_TUNE.meteorCount;
     for (let i = 0; i < nMet; i++) {
       const delay = BLUES_TUNE.meteorStart + (i / Math.max(1, nMet - 1)) * BLUES_TUNE.meteorSpan;
       ctx.after(delay, () => {
-        const rect = ctx.actionRect();
-        // Re-evaluate live targets at each meteor call so late meteors hunt survivors!
-        const curTargets = distributeTargets(ctx, p.x, p.y, nMet, {
+        // Re-evaluate live targets within default findTargets reach from bird at tap time
+        const curTargets = distributeTargets(ctx, tapX, tapY, nMet, {
           aheadOnly: false,
-          explicitTarget: i === 0 ? target : null,
+          rect: tapRect,
         });
         const tgt = curTargets[i % curTargets.length];
 
         const slantX = ctx.range(-5.2, -1.6);
-        const sx = tgt.x + slantX;
-        const sy = rect.y1 + 2.2 + (i % 3) * 1.1;
+        const sx = clamp(tgt.x + slantX, tapRect.x0 - 3.5, tapRect.x1 + 3.5);
+        const sy = tapRect.y1 + 2.2 + (i % 3) * 1.1;
         const dx = tgt.x - sx;
         const dy = tgt.y - sy;
         const dist = Math.hypot(dx, dy) || 1;
@@ -366,33 +368,11 @@ const blues = {
 
     /** Glowing cyan-white comet wake behind each diving meteor. */
     blues_trail(g, e, t, cam) {
-      const pts = e.pts;
-      if (!pts || pts.length < 2) return;
-      const win = 0.42;
-      g.save();
-      g.globalCompositeOperation = 'lighter';
-      g.lineCap = 'round';
-      for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i], p1 = pts[i + 1];
-        const a = clamp(1 - (t - p1.t) / win, 0, 1);
-        if (a <= 0.02) continue;
-        const x0 = cam.sx(p0.x), y0 = cam.sy(p0.y);
-        const x1 = cam.sx(p1.x), y1 = cam.sy(p1.y);
-        g.strokeStyle = `rgba(20, 220, 255, ${(0.68 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(3, 0.58 * cam.s * a);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-
-        g.strokeStyle = `rgba(240, 255, 255, ${(0.92 * a).toFixed(3)})`;
-        g.lineWidth = Math.max(1.4, 0.22 * cam.s * a);
-        g.beginPath();
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke();
-      }
-      g.restore();
+      drawSmoothRibbon(g, cam, e.pts, t, 0.44, [
+        { color: '0, 175, 255', alpha: 0.72, widthM: 0.54, minPx: 4.5 },
+        { color: '115, 242, 255', alpha: 0.88, widthM: 0.30, minPx: 2.5 },
+        { color: '245, 255, 255', alpha: 0.96, widthM: 0.13, minPx: 1.5 },
+      ]);
     },
 
     /** Cyan shock-ring + star flare when a meteor detonates. */

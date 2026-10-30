@@ -1,12 +1,20 @@
 // Shared deterministic helpers + procedural cartoon art utilities for birds-b (rows 7–12).
-// Owner: birds-b. Uses ONLY ability ctx (falls back cleanly to ctx.planck / ctx.world until
-// physics-core's extended ctx helpers land, and delegates to ctx.<fn> automatically once present).
+// Owner: birds-b. Uses ONLY ability ctx. Enforces Design Amendment A1 (local reach via
+// ctx.actionRect() and ctx.findTargets default reach; zero level-wide homing).
 // ZERO Math.random / Date / camera in sim helpers.
 
 import { KIND, CAT } from '../contracts.js';
 
+export const DEFAULT_REACH_M = 20;
+
 export function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** Read current sim-defined local screen rect from ctx.actionRect(). */
+export function getActionRect(ctx) {
+  const r = typeof ctx.actionRect === 'function' ? ctx.actionRect() : ctx.actionRect;
+  return r || { x0: 0, x1: 28, y0: 0, y1: 14 };
 }
 
 /** Keep the turn alive for at least `sec` sim-seconds while an ability's multi-stage chaos runs. */
@@ -87,46 +95,101 @@ export function setSensor(ctx, ent, sensor) {
   ent.body.setAwake(true);
 }
 
-/** Deterministic list of live dynamic blocks and pigs sorted by id. */
-export function dynamicTargets(ctx, filter = null) {
-  const src = typeof ctx.allEnts === 'function' ? ctx.allEnts() : ctx.world.ents;
+/**
+ * Acquire targets strictly via `ctx.findTargets`'s default local reach from `origin = {x, y}`
+ * (Design Amendment A1: no level-wide homing).
+ */
+export function findLocalTargets(
+  ctx,
+  origin,
+  { kinds = [KIND.PIG], max = 50, aheadOnly = false, fallbackBlocks = true } = {},
+) {
+  const ox = origin.x;
+  const oy = origin.y;
+  const raw = ctx.findTargets({
+    x: ox,
+    y: oy,
+    kinds,
+    max,
+    aheadOnly,
+    fallbackBlocks,
+  });
+  const maxD2 = DEFAULT_REACH_M * DEFAULT_REACH_M;
   const out = [];
-  for (let i = 0; i < src.length; i++) {
-    const e = src[i];
+  for (let i = 0; i < raw.length; i++) {
+    const e = raw[i];
     if (!e || !e.alive || e.isStatic) continue;
-    if (e.kind !== KIND.BLOCK && e.kind !== KIND.PIG) continue;
-    if (filter && !filter(e)) continue;
-    out.push(e);
+    const p = ctx.pos(e);
+    if ((p.x - ox) ** 2 + (p.y - oy) ** 2 <= maxD2) {
+      out.push(e);
+    }
   }
-  out.sort((a, b) => a.id - b.id);
+  // If pigs were out of 20 m reach and raw returned distant pigs before A1 landed in physics-core,
+  // re-query blocks locally so nearby structures within 20 m are still found cleanly.
+  if (!out.length && fallbackBlocks && !kinds.includes(KIND.BLOCK)) {
+    const rawBlocks = ctx.findTargets({
+      x: ox,
+      y: oy,
+      kinds: [KIND.BLOCK],
+      max,
+      aheadOnly,
+      fallbackBlocks: false,
+    });
+    for (let i = 0; i < rawBlocks.length; i++) {
+      const e = rawBlocks[i];
+      if (!e || !e.alive || e.isStatic) continue;
+      const p = ctx.pos(e);
+      if ((p.x - ox) ** 2 + (p.y - oy) ** 2 <= maxD2) {
+        out.push(e);
+      }
+    }
+  }
   return out;
 }
 
-export function getStructureBounds(ctx) {
-  if (ctx.structureBounds) return ctx.structureBounds;
-  if (ctx.game && ctx.game.structureBounds) return ctx.game.structureBounds;
-  const r = ctx.actionRect();
-  return { x0: r.x0 + 4, x1: r.x1 - 4, y0: 0, y1: Math.max(6, r.y1 - 6) };
-}
-
 /**
- * Deterministic auto-aim when target == null.
- * Picks the densest pig+block cluster ahead of the bird (or anywhere if bird passed structures).
+ * Deterministic local target resolution from `origin` (tapPos of bird, or pointer tap point).
+ * Uses ONLY `findLocalTargets` default reach — never scans across the whole level.
  */
-export function resolveTarget(ctx, bird, target, { preferAhead = true, clusterR = 5.0 } = {}) {
+export function resolveLocalTarget(
+  ctx,
+  origin,
+  target,
+  { preferAhead = true, clusterR = 5.0 } = {},
+) {
   if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) {
-    return { x: target.x, y: target.y };
+    return { x: target.x, y: target.y, hasTarget: true, fromPointer: true };
   }
-  const bp = bird && bird.alive ? ctx.pos(bird) : { x: 0, y: 4 };
-  const all = dynamicTargets(ctx);
-  if (!all.length) {
-    const sb = getStructureBounds(ctx);
-    return { x: (sb.x0 + sb.x1) * 0.5, y: Math.max(1.5, sb.y1 * 0.35) };
+  let pigs = findLocalTargets(ctx, origin, {
+    kinds: [KIND.PIG],
+    max: 50,
+    aheadOnly: preferAhead,
+    fallbackBlocks: false,
+  });
+  if (!pigs.length && preferAhead) {
+    pigs = findLocalTargets(ctx, origin, {
+      kinds: [KIND.PIG],
+      max: 50,
+      aheadOnly: false,
+      fallbackBlocks: false,
+    });
   }
-  const pigs = all.filter((e) => e.kind === KIND.PIG);
-  let pool = preferAhead ? pigs.filter((e) => ctx.pos(e).x >= bp.x - 2) : pigs;
-  if (!pool.length) pool = pigs.length ? pigs : all;
-
+  const allLocal = findLocalTargets(ctx, origin, {
+    kinds: [KIND.PIG, KIND.BLOCK],
+    max: 80,
+    aheadOnly: false,
+    fallbackBlocks: true,
+  });
+  if (!allLocal.length) {
+    const rect = getActionRect(ctx);
+    return {
+      x: clamp(origin.x + 10, rect.x0 + 2, rect.x1 - 2),
+      y: Math.max(1.6, origin.y * 0.4),
+      hasTarget: false,
+      fromPointer: false,
+    };
+  }
+  const pool = pigs.length ? pigs : allLocal;
   const r2 = clusterR * clusterR;
   let best = pool[0];
   let bestScore = -1e9;
@@ -134,27 +197,56 @@ export function resolveTarget(ctx, bird, target, { preferAhead = true, clusterR 
     const c = pool[i];
     const cp = ctx.pos(c);
     let score = c.kind === KIND.PIG ? 6 : 1;
-    for (let j = 0; j < all.length; j++) {
-      const o = all[j];
+    for (let j = 0; j < allLocal.length; j++) {
+      const o = allLocal[j];
       const op = ctx.pos(o);
       const d2 = (op.x - cp.x) ** 2 + (op.y - cp.y) ** 2;
       if (d2 <= r2) score += o.kind === KIND.PIG ? 4 : 1.2;
     }
-    // Slight preference for closer targets on ties
-    score -= Math.hypot(cp.x - bp.x, cp.y - bp.y) * 0.04;
+    score -= Math.hypot(cp.x - origin.x, cp.y - origin.y) * 0.05;
     if (score > bestScore) {
       bestScore = score;
       best = c;
     }
   }
   const p = ctx.pos(best);
-  return { x: p.x, y: p.y };
+  return { x: p.x, y: p.y, hasTarget: true, fromPointer: false };
+}
+
+/** Liang-Barsky clip of segment (x1,y1)->(x2,y2) to rect {x0,x1,y0,y1}. */
+export function clipSegmentToRect(x1, y1, x2, y2, rect) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  let u1 = 0;
+  let u2 = 1;
+  const p = [-dx, dx, -dy, dy];
+  const q = [x1 - rect.x0, rect.x1 - x1, y1 - rect.y0, rect.y1 - y1];
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-8) {
+      if (q[i] < 0) return null;
+    } else {
+      const t = q[i] / p[i];
+      if (p[i] < 0) {
+        if (t > u2) return null;
+        if (t > u1) u1 = t;
+      } else {
+        if (t < u1) return null;
+        if (t < u2) u2 = t;
+      }
+    }
+  }
+  return {
+    x1: x1 + u1 * dx,
+    y1: y1 + u1 * dy,
+    x2: x1 + u2 * dx,
+    y2: y1 + u2 * dy,
+  };
 }
 
 /** Find ground/static terrain surface y just below (x, maxY) so funnels sit on mesas/ground. */
 export function groundTopAt(ctx, x, maxY = 12) {
   let top = 0;
-  const ents = ctx.world.ents;
+  const ents = typeof ctx.allEnts === 'function' ? ctx.allEnts() : ctx.world.ents;
   for (let i = 0; i < ents.length; i++) {
     const e = ents[i];
     if (!e || !e.alive || !e.isStatic || e.kind !== KIND.TERRAIN) continue;

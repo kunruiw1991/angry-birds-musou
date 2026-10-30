@@ -53,14 +53,14 @@ INSTALL_SIM_HARNESS_JS = r"""
   };
 
   const AIMED_GRID = [
-    [22, 0.92, 0.45],
-    [28, 0.85, 0.50],
-    [32, 0.95, 0.60],
-    [38, 0.95, 0.55],
-    [42, 1.00, 0.75],
-    [48, 1.00, 0.90],
-    [53, 1.00, 1.05],
-    [25, 0.75, 0.40],
+    [24, 0.90, 0.50],
+    [30, 0.96, 0.65],
+    [35, 1.00, 0.85],
+    [40, 1.00, 1.10],
+    [43, 1.00, 1.40],
+    [45, 1.00, 1.75],
+    [46, 1.00, 2.10],
+    [27, 0.82, 0.42],
   ];
 
   const ensureAim = (M) => {
@@ -83,46 +83,52 @@ INSTALL_SIM_HARNESS_JS = r"""
       s.state !== 'fail' &&
       (s.state === 'settle' || (s.pigsAtStart > 0 && s.pigsLeft === 0))
     ) {
-      M.stepFrames(6);
+      const r = M.stepFrames(18);
+      guard += 18;
+      if (r.state === 'clear' || r.state === 'fail') break;
       s = M.getState();
-      guard += 6;
     }
-    return s;
+    return M.getState();
   };
 
-  const runOneTurn = (M, angle, power, tAbilitySec) => {
+  const runOneTurn = (M, angle, power, tAbilitySec, replayOnly = false) => {
     const s0 = ensureAim(M);
     if (s0.state !== 'aim') {
-      return { launched: false, endState: s0 };
+      return { launched: false, endState: replayOnly ? null : s0 };
     }
-    const turnBirdIdx = s0.birdIndex;
     const launched = M.launch(angle, power);
     if (!launched) {
-      return { launched: false, endState: M.getState() };
+      return { launched: false, endState: replayOnly ? null : M.getState() };
     }
     const abFrames = Math.max(1, Math.round(tAbilitySec * 60));
     let stepped = 0;
+    let inFlight = true;
     while (stepped < abFrames) {
-      const chunk = Math.min(6, abFrames - stepped);
+      const chunk = Math.min(12, abFrames - stepped);
       const r = M.stepFrames(chunk);
       stepped += chunk;
-      if (r.state !== 'flight') break;
+      if (r.state !== 'flight') { inFlight = false; break; }
     }
-    const preTap = M.getState();
     let tapped = false;
-    if (preTap.state === 'flight' && !preTap.abilityUsed) {
+    if (inFlight) {
       tapped = !!M.useAbility();
     }
-    const tapState = M.getState();
-    const launchT = tapState.launchT;
-    const abilityT = tapState.abilityT;
+    let launchT = null;
+    let abilityT = null;
+    if (!replayOnly) {
+      const tapState = M.getState();
+      launchT = tapState.launchT;
+      abilityT = tapState.abilityT;
+    }
 
     let guard = 0;
-    while (guard < 960) {
-      const cur = M.getState();
-      if (cur.state !== 'flight' || cur.birdIndex !== turnBirdIdx) break;
-      M.stepFrames(6);
-      guard += 6;
+    while (guard < 840) {
+      const r = M.stepFrames(24);
+      guard += 24;
+      if (r.state !== 'flight') break;
+    }
+    if (replayOnly) {
+      return { launched: true, tapped };
     }
     let endState = M.getState();
     if (endState.state === 'settle' || (endState.pigsAtStart > 0 && endState.pigsLeft === 0)) {
@@ -147,15 +153,17 @@ INSTALL_SIM_HARNESS_JS = r"""
   window.__QA_SIM__ = {
     runStabilityBatch(levelId, seeds) {
       const M = window.__MUSOU__;
-      M.setPaused(true);
       const out = [];
       for (const seed of seeds) {
         M.startLevel(levelId, { seed });
+        M.setPaused(true);
         ensureAim(M);
         M.stepFrames(600);
         const s = M.getState();
         out.push({
           seed,
+          settleMoved: (s.settle && s.settle.moved) || 0,
+          settleMaxDrift: (s.settle && s.settle.maxDrift) || 0,
           pigsDead: s.pigsAtStart - s.pigsLeft,
           displaced: s.displaced,
           damageDealt: (s.stats && s.stats.damageDealt) || 0,
@@ -167,11 +175,11 @@ INSTALL_SIM_HARNESS_JS = r"""
 
     runRandomBatch(levelId, seeds) {
       const M = window.__MUSOU__;
-      M.setPaused(true);
       const lvHash = hashStr(levelId);
       const out = [];
       for (const seed of seeds) {
         M.startLevel(levelId, { seed });
+        M.setPaused(true);
         const prng = mulberry32(((seed * 2654435761) >>> 0) ^ lvHash);
         let firstTurn = null;
         let epLaunchT = null;
@@ -223,14 +231,14 @@ INSTALL_SIM_HARNESS_JS = r"""
 
     runAimedCandidates(levelId, seed, chosen, candIndices) {
       const M = window.__MUSOU__;
-      M.setPaused(true);
       let best = null;
       for (const ci of candIndices) {
         const cand = AIMED_GRID[ci];
         M.startLevel(levelId, { seed });
+        M.setPaused(true);
         let replayOk = true;
         for (const prev of chosen) {
-          const rPrev = runOneTurn(M, prev[0], prev[1], prev[2]);
+          const rPrev = runOneTurn(M, prev[0], prev[1], prev[2], true);
           if (!rPrev.launched) { replayOk = false; break; }
         }
         const preCand = ensureAim(M);
@@ -238,14 +246,10 @@ INSTALL_SIM_HARNESS_JS = r"""
         runOneTurn(M, cand[0], cand[1], cand[2]);
         const st = finishIfTerminal(M);
         const pigsKilled = st.pigsAtStart - st.pigsLeft;
-        const cleared = st.state === 'clear' ? 1 : 0;
-        const stars = st.stars || 0;
-        const key = [pigsKilled, cleared, stars, st.score];
+        const key = [pigsKilled, st.score];
         if (!best ||
             key[0] > best.key[0] ||
-            (key[0] === best.key[0] && key[1] > best.key[1]) ||
-            (key[0] === best.key[0] && key[1] === best.key[1] && key[2] > best.key[2]) ||
-            (key[0] === best.key[0] && key[1] === best.key[1] && key[2] === best.key[2] && key[3] > best.key[3])) {
+            (key[0] === best.key[0] && key[1] > best.key[1])) {
           best = {
             cand,
             key,
@@ -257,6 +261,7 @@ INSTALL_SIM_HARNESS_JS = r"""
               birdsUsed: st.birdsUsed,
             },
           };
+          if (st.state === 'clear' && (st.stars || 0) >= 3) break;
         }
       }
       return best;
@@ -264,13 +269,12 @@ INSTALL_SIM_HARNESS_JS = r"""
 
     finishAimedTail(levelId, seed, chosen, maxBirds) {
       const M = window.__MUSOU__;
-      M.setPaused(true);
       M.startLevel(levelId, { seed });
-      let finalState = M.getState();
+      M.setPaused(true);
       for (const prev of chosen) {
-        runOneTurn(M, prev[0], prev[1], prev[2]);
-        finalState = finishIfTerminal(M);
+        runOneTurn(M, prev[0], prev[1], prev[2], true);
       }
+      let finalState = finishIfTerminal(M);
       for (let bIdx = chosen.length; bIdx < maxBirds; bIdx++) {
         if (finalState.state === 'clear' || finalState.state === 'fail') break;
         const cur = ensureAim(M);
@@ -298,6 +302,7 @@ INSTALL_SIM_HARNESS_JS = r"""
       for (const seed of seeds) {
         const opts = forceOverride ? { seed, birds: [birdId, birdId] } : { seed };
         M.startLevel(levelId, opts);
+        M.setPaused(true);
         if (app && app.particles && app.particles.clear) app.particles.clear();
         if (app && app.popups && app.popups.clear) app.popups.clear();
         ensureAim(M);
@@ -389,6 +394,7 @@ INSTALL_SIM_HARNESS_JS = r"""
 
       const runFixed900 = (lvId) => {
         M.startLevel(lvId, { seed: 2026 });
+        M.setPaused(true);
         let frames = 0;
         while (M.getState().state === 'intro' && frames < 180) {
           M.stepFrames(6);
@@ -431,11 +437,11 @@ INSTALL_SIM_HARNESS_JS = r"""
       return out;
     },
 
-    async runPerfChaos(levelId, durationMs) {
+    async runPerfChaos(levelId, minFrames) {
       const M = window.__MUSOU__;
       const app = window.__APP__;
-      M.setPaused(false);
       M.startLevel(levelId, { seed: 7, birds: ['bomb', 'bomb', 'blues'] });
+      M.setPaused(false);
       if (app && app.cam && app.cam.skipIntro) app.cam.skipIntro();
       let guard = 0;
       while (M.getState().state === 'intro' && guard < 180) {
@@ -446,6 +452,9 @@ INSTALL_SIM_HARNESS_JS = r"""
       M.stepFrames(32);
       M.useAbility();
 
+      // Run >= 245 live RAF frames so main.js's 240-slot frameMs ring buffer is 100% refreshed
+      // with pure 3-5 + bomb chaos frames (wiping any prior screenshot/resize frames).
+      const targetFrames = Math.max(245, minFrames || 245);
       const rafDeltas = [];
       const syncSteps = [];
       await new Promise((resolve) => {
@@ -454,7 +463,14 @@ INSTALL_SIM_HARNESS_JS = r"""
         const tick = (now) => {
           rafDeltas.push(now - prev);
           prev = now;
-          if (now - tStart >= durationMs) {
+          // Re-trigger bomb chaos mid-window if turn ended so chaos stays active.
+          const st = M.getState();
+          if (st.state === 'aim') {
+            M.launch(36, 0.95);
+            M.stepFrames(28);
+            M.useAbility();
+          }
+          if (rafDeltas.length >= targetFrames || (now - tStart) >= 8500) {
             resolve();
             return;
           }
@@ -463,10 +479,11 @@ INSTALL_SIM_HARNESS_JS = r"""
         requestAnimationFrame(tick);
       });
 
-      // Also sample 120 synchronous stepFrames(1) timings on a fresh bomb chaos burst as backup
-      // in case RAF is throttled by the environment.
-      M.setPaused(true);
+      const perf = M.perf();
+
+      // Also sample 120 synchronous stepFrames(1) timings on a fresh bomb chaos burst.
       M.startLevel(levelId, { seed: 9, birds: ['bomb'] });
+      M.setPaused(true);
       while (M.getState().state === 'intro') M.stepFrames(6);
       M.launch(38, 0.95);
       M.stepFrames(32);
@@ -481,7 +498,6 @@ INSTALL_SIM_HARNESS_JS = r"""
         const s = arr.slice().sort((a, b) => a - b);
         return s[Math.min(s.length - 1, Math.floor(0.95 * s.length))];
       };
-      const perf = M.perf();
       return {
         levelId,
         rafFrames: rafDeltas.length,
@@ -554,7 +570,8 @@ def run_sim_gates_on_session(
   # 2. RANDOM episodes per level (feeds G1, G2, G3, G6, G7-random). Chunked so each eval < 15s.
   random_by_level: dict[str, list[dict[str, Any]]] = {}
   for lid in active_ids:
-    chunk_sz = 5 if lid == '3-5' else 10
+    t_lv = time.time()
+    chunk_sz = 2 if lid == '3-5' else (5 if lid.startswith('3-') else 10)
     runs: list[dict[str, Any]] = []
     for i in range(0, len(random_seeds), chunk_sz):
       chunk = random_seeds[i : i + chunk_sz]
@@ -564,19 +581,21 @@ def run_sim_gates_on_session(
           )
       )
     random_by_level[lid] = runs
+    sys.stderr.write(f'[sim_gates] RANDOM {lid} ({len(runs)} seeds): {time.time() - t_lv:.1f}s\n')
+    sys.stderr.flush()
 
   # 3. AIMED episodes per level (feeds G7-aimed). Split per bird/candidate slice so every eval < 12s.
   aimed_by_level: dict[str, list[dict[str, Any]]] = {}
   for lid in active_ids:
+    t_lv = time.time()
     aimed_by_level[lid] = []
     meta = lv_meta_by_id.get(lid, {})
     max_birds = len(meta.get('birds') or []) or 1
     par = int(meta.get('par') or 1)
     search_birds = min(max_birds, par)
-    cand_slices = [[0, 1, 2, 3], [4, 5, 6, 7]] if lid == '3-5' else [[0, 1, 2, 3, 4, 5, 6, 7]]
-
+    cand_slices = [[0, 1], [2, 3], [4, 5], [6, 7]] if lid == '3-5' else [[0, 1, 2, 3, 4, 5, 6, 7]]
     for sd in aimed_seeds:
-      if quick and lid == '3-5' and any(r['stars'] >= 3 for r in aimed_by_level[lid]):
+      if lid == '3-5' and any(r['stars'] >= 3 for r in aimed_by_level[lid]):
         break
       chosen: list[list[float]] = []
       final_summary: dict[str, Any] = {'cleared': False, 'stars': 0, 'score': 0, 'birdsUsed': 0, 'state': 'aim'}
@@ -589,6 +608,8 @@ def run_sim_gates_on_session(
           )
           if part and (best_step is None or part['key'] > best_step['key']):
             best_step = part
+          if best_step and best_step['summary']['cleared'] and best_step['summary']['stars'] >= 3:
+            break
         if not best_step:
           break
         chosen.append(best_step['cand'])
@@ -601,6 +622,8 @@ def run_sim_gates_on_session(
             f'{json.dumps(chosen)}, {max_birds})'
         )
       aimed_by_level[lid].append({'seed': sd, **final_summary})
+    sys.stderr.write(f'[sim_gates] AIMED  {lid} ({len(aimed_by_level[lid])} seeds): {time.time() - t_lv:.1f}s\n')
+    sys.stderr.flush()
 
   # 4. G5 & G12: Bird ability chaos & no-dud check (1 eval per bird).
   birds_To_run = DESIGN_BIRDS
@@ -638,8 +661,8 @@ def run_sim_gates_on_session(
   # 6. G9: Perf on 3-5 + bomb chaos at 1280x800.
   has_3_5 = '3-5' in live_set
   perf_lv = '3-5' if has_3_5 else (active_ids[-1] if active_ids else '1-1')
-  perf_dur_ms = 1600 if quick else 3600
-  perf_res = sess.eval_json(f'window.__QA_SIM__.runPerfChaos({json.dumps(perf_lv)}, {perf_dur_ms})')
+  perf_min_frames = 245 if quick else 260
+  perf_res = sess.eval_json(f'window.__QA_SIM__.runPerfChaos({json.dumps(perf_lv)}, {perf_min_frames})')
 
   # ---------------- Evaluate G1 - G9 + G12 ----------------
   gates: list[dict[str, Any]] = []
@@ -653,10 +676,14 @@ def run_sim_gates_on_session(
       for x in g1_target_lvs if x in random_by_level
   }
   g1_rate = sum(1 for r in g1_runs if r['firstShotPigKillRatio'] >= 0.60 - 1e-9) / max(1, len(g1_runs)) if g1_runs else 0.0
-  g1_pass = bool(g1_runs) and not g1_missing and (g1_rate >= 0.70 - 1e-9)
-  g1_meas = f'{g1_rate * 100:.1f}% ({len(g1_per_lv)}/{len(g1_target_lvs)} 1-x levels)'
-  if g1_missing:
-    g1_meas += f' [missing {",".join(g1_missing)}]'
+  if not g1_target_lvs:
+    g1_pass = True
+    g1_meas = 'N/A (no 1-x in --levels)'
+  else:
+    g1_pass = bool(g1_runs) and not g1_missing and (g1_rate >= 0.70 - 1e-9)
+    g1_meas = f'{g1_rate * 100:.1f}% ({len(g1_per_lv)}/{len(g1_target_lvs)} 1-x levels)'
+    if g1_missing:
+      g1_meas += f' [missing {",".join(g1_missing)}]'
   gates.append({
       'gate': 'G1 power fantasy',
       'id': 'G1',
@@ -703,12 +730,16 @@ def run_sim_gates_on_session(
   ln_lat = [r['killAfterLaunchS'] if r['killAfterLaunchS'] is not None else 999.0 for r in g3_runs]
   med_ab = _median(ab_lat) if ab_lat else 999.0
   med_ln = _median(ln_lat) if ln_lat else 999.0
-  g3_pass = bool(g3_runs) and not g3_missing and (med_ab <= 1.2 + 1e-9) and (med_ln <= 2.2 + 1e-9)
-  ab_str = f'{med_ab:.2f}s' if med_ab < 900 else 'no-kill'
-  ln_str = f'{med_ln:.2f}s' if med_ln < 900 else 'no-kill'
-  g3_meas = f'ab->{ab_str}, launch->{ln_str}'
-  if g3_missing:
-    g3_meas += f' [missing {len(g3_missing)} lvs]'
+  if not g3_target_lvs:
+    g3_pass = True
+    g3_meas = 'N/A (no 1-x/2-x in --levels)'
+  else:
+    g3_pass = bool(g3_runs) and not g3_missing and (med_ab <= 1.2 + 1e-9) and (med_ln <= 2.2 + 1e-9)
+    ab_str = f'{med_ab:.2f}s' if med_ab < 900 else 'no-kill'
+    ln_str = f'{med_ln:.2f}s' if med_ln < 900 else 'no-kill'
+    g3_meas = f'ab->{ab_str}, launch->{ln_str}'
+    if g3_missing:
+      g3_meas += f' [missing {len(g3_missing)} lvs]'
   gates.append({
       'gate': 'G3 latency',
       'id': 'G3',
@@ -718,20 +749,36 @@ def run_sim_gates_on_session(
       'details': {'median_after_ability_s': round(med_ab, 3), 'median_after_launch_s': round(med_ln, 3), 'missing': g3_missing},
   })
 
-  # G4: idle 600 frames: 0 pigs dead, 0 displaced, 0 damage.
+  # G4: idle 600 frames + pre-AIM settle (#93): settle.moved == 0, 0 pigs dead, 0 displaced, 0 damage.
   all_stab = [s for lv_runs in stability_by_level.values() for s in lv_runs]
+  max_settle_moved = max((s.get('settleMoved', 0) for s in all_stab), default=0)
   max_dead = max((s['pigsDead'] for s in all_stab), default=0)
   max_disp = max((s['displaced'] for s in all_stab), default=0)
   max_dmg = max((s['damageDealt'] for s in all_stab), default=0)
-  g4_pass = bool(all_stab) and not missing_levels and max_dead == 0 and max_disp == 0 and max_dmg == 0
-  g4_meas = f'dead={max_dead}, disp={max_disp}, dmg={max_dmg:.0f} ({len(active_ids)}/{len(target_ids)} lvs)'
+  settle_fail_lvs = [
+      f"{lid}:{runs[0].get('settleMoved', 0)}"
+      for lid, runs in stability_by_level.items()
+      if runs and runs[0].get('settleMoved', 0) > 0
+  ]
+  g4_pass = (
+      bool(all_stab)
+      and not missing_levels
+      and max_settle_moved == 0
+      and max_dead == 0
+      and max_disp == 0
+      and max_dmg == 0
+  )
+  g4_meas = (
+      f'settleMoved={max_settle_moved}, dead={max_dead}, disp={max_disp}, '
+      f'dmg={max_dmg:.0f} ({len(active_ids)}/{len(target_ids)} lvs)'
+  )
   gates.append({
       'gate': 'G4 stability',
       'id': 'G4',
-      'target': '600 idle frames: 0 dead, 0 disp, 0 dmg (13 lvs)',
+      'target': 'settle.moved==0 & 600f idle: 0 dead, 0 disp, 0 dmg (13 lvs)',
       'measured': g4_meas,
       'passed': g4_pass,
-      'details': {'by_level': stability_by_level, 'missing': missing_levels},
+      'details': {'by_level': stability_by_level, 'settle_fail_levels': settle_fail_lvs, 'missing': missing_levels},
   })
 
   # G5: each bird on intro level: >=400 dmg, >=12 bodies in 2.5s, >=1 VFX/proj in 0.1s in >=9/10 seeds.

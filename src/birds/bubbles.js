@@ -4,14 +4,14 @@
 // they fall first (gravityScale 1.8 for 1.2 s, "先下") smashing everything (×3 dmg),
 // then float up (gravityScale -1.2, "后上") and leave; balloons ignore each other.
 
-import { CAT } from '../contracts.js';
+import { KIND, CAT } from '../contracts.js';
 import {
   clamp,
+  getActionRect,
   holdTurn,
   resizeCircle,
   setGravityScale,
-  getStructureBounds,
-  resolveTarget,
+  findLocalTargets,
   hash01,
   drawBirdIcon,
 } from './b_helpers.js';
@@ -232,11 +232,18 @@ export default {
     holdTurn(ctx, 3.1);
 
     const p = ctx.pos(bird);
-    const rect = ctx.actionRect();
-    const sb = getStructureBounds(ctx);
-    const aim = resolveTarget(ctx, bird, target);
+    const tapPos = { x: p.x, y: p.y };
+    const rect = getActionRect(ctx);
+    const localTargets = findLocalTargets(ctx, tapPos, {
+      kinds: [KIND.PIG, KIND.BLOCK],
+      max: 40,
+      fallbackBlocks: true,
+    }).filter((e) => {
+      const ep = ctx.pos(e);
+      return ep.x >= rect.x0 + 0.8 && ep.x <= rect.x1 - 0.8;
+    });
 
-    // 1. Inflate Bubbles himself to r = 2.0 m for 1.5 s + radial push 25..30 + 100..125 dmg within 3.5..4.4 m
+    // 1. Inflate Bubbles himself to r = 2.0 m for 1.5 s + radial push 25..30 + 100..125 dmg within 3.5..4.3 m
     bird.data.inflated = true;
     bird.data.squishUntil = ctx.time + 0.35;
     bird.dmgMul = 3.2;
@@ -247,7 +254,7 @@ export default {
       type: 'bubbles_confetti',
       x0: rect.x0,
       x1: rect.x1,
-      y0: 0,
+      y0: rect.y0 ?? 0,
       y1: rect.y1,
       seed: Math.round(p.x * 13 + 7),
       ttl: 2.8,
@@ -265,27 +272,26 @@ export default {
       ctx.sfx('poof', { x: bp.x, y: bp.y });
     });
 
-    // 2. Release 30 giant orange balloon-Bubbles (r 0.75–1.30) across actionRect top
-    // 20 concentrated across structure bounds + 10 spanning full actionRect for screen-wide spectacle
-    const spanX0 = Math.min(rect.x0 + 1.5, sb.x0 - 4);
-    const spanX1 = Math.max(rect.x1 - 1.5, sb.x1 + 4);
-    const structX0 = sb.x0 - 2.2;
-    const structX1 = sb.x1 + 2.2;
-    const topBase = Math.max(sb.y1 + 2.5, 9.5);
+    // 2. Release 30 giant orange balloon-Bubbles (r 0.76–1.30) strictly across actionRect() top!
+    const xLo = rect.x0 + 1.0;
+    const xHi = Math.max(xLo + 6, rect.x1 - 1.0);
+    const topBase = Math.max(9.5, rect.y1 - 3.5);
 
     for (let i = 0; i < BALLOON_COUNT; i++) {
-      const inStruct = i < 20;
-      const u = inStruct ? (i + 0.5) / 20 : ((i - 20) + 0.5) / 10;
-      const baseX = inStruct
-        ? structX0 + u * Math.max(4, structX1 - structX0)
-        : spanX0 + u * Math.max(8, spanX1 - spanX0);
-      const bx = baseX + ctx.range(-0.9, 0.9);
+      const u = (i + 0.5) / BALLOON_COUNT;
+      let baseX = xLo + u * (xHi - xLo);
+      let vx = ctx.range(-1.8, 1.8);
+      if (localTargets.length > 0 && i % 2 === 0) {
+        const lt = ctx.pos(localTargets[(i >> 1) % localTargets.length]);
+        baseX = clamp(baseX * 0.45 + lt.x * 0.55, xLo, xHi);
+        vx = clamp((lt.x - baseX) * 0.16, -2.8, 2.8) + ctx.range(-1.2, 1.2);
+      }
+      const bx = clamp(baseX + ctx.range(-0.85, 0.85), xLo, xHi);
       const highWave = i % 3 === 0;
-      const by = topBase + (highWave ? ctx.range(4.5, 9.0) : ctx.range(-1.0, 4.2));
+      const by = topBase + (highWave ? ctx.range(2.2, 5.2) : ctx.range(-1.8, 2.0));
       const br = ctx.range(0.76, 1.30);
-      const vx = clamp((aim.x - bx) * 0.16, -3.5, 3.5) + ctx.range(-1.4, 1.4);
-      const vy = highWave ? ctx.range(-11.5, -7.5) : ctx.range(-15.5, -10.5);
-      const delay = (i % 6) * 0.045; // first 5 spawn at t=0.00s, staggered sky-to-ground cascade!
+      const vy = highWave ? ctx.range(-12.0, -8.0) : ctx.range(-16.0, -11.0);
+      const delay = (i % 6) * 0.045;
       if (delay === 0) {
         spawnBalloon(ctx, bx, by, vx, vy, br);
       } else {

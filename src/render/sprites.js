@@ -1,33 +1,84 @@
-// Offscreen sprite cache + procedural cartoon sprites for blocks, pigs, balloons, poison,
+// Offscreen sprite atlas cache + procedural cartoon sprites for blocks, pigs, balloons, poison,
 // and slingshot (owner: render-art). Spec: docs/DESIGN.md §8.
-// Zero shadowBlur in per-entity loops; cached offscreen canvases keyed by
-// (type, sizeBucket, damageStage, zoomBucket).
+// Zero shadowBlur in per-entity loops; sprites are shelf-packed into shared 1024x1024 offscreen
+// atlas sheets keyed by (type, sizeBucket, damageStage, zoomBucket) so zero per-sprite <canvas>
+// contexts are allocated during gameplay chaos!
 
-const ZOOM_BUCKETS = [20, 30, 44, 62, 86, 116];
-const MAX_CACHE_ENTRIES = 520;
+const ZOOM_BUCKETS = [44, 88];
+const ATLAS_SIZE = 1024;
+const MAX_ATLAS_SHEETS = 6;
 const _spriteCache = new Map();
+const _sheets = [];
 
 function pickZoomBucket(pxPerM) {
-  for (let i = 0; i < ZOOM_BUCKETS.length; i++) {
-    if (pxPerM <= ZOOM_BUCKETS[i]) return ZOOM_BUCKETS[i];
-  }
-  return ZOOM_BUCKETS[ZOOM_BUCKETS.length - 1];
+  return pxPerM <= 48 ? ZOOM_BUCKETS[0] : ZOOM_BUCKETS[1];
 }
 
 function qSize(v) {
   return Math.round((v || 0) * 50) / 50;
 }
 
+function allocAtlasSlot(pw, ph) {
+  const w = Math.max(4, Math.ceil(pw));
+  const h = Math.max(4, Math.ceil(ph));
+  if (w > ATLAS_SIZE - 4 || h > ATLAS_SIZE - 4) {
+    // Oversized sprite fallback canvas
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return { sheet: c, g: c.getContext('2d'), sx: 0, sy: 0, sw: w, sh: h };
+  }
+  let cur = _sheets[_sheets.length - 1];
+  if (cur && cur.x + w + 2 > ATLAS_SIZE) {
+    cur.x = 1;
+    cur.y += cur.rowH + 2;
+    cur.rowH = 0;
+  }
+  if (!cur || cur.y + h + 2 > ATLAS_SIZE) {
+    if (_sheets.length >= MAX_ATLAS_SHEETS) {
+      // Recycle all sheets cleanly if cap ever reached
+      _sheets.length = 0;
+      _spriteCache.clear();
+    }
+    const c = document.createElement('canvas');
+    c.width = ATLAS_SIZE;
+    c.height = ATLAS_SIZE;
+    cur = { canvas: c, g: c.getContext('2d'), x: 1, y: 1, rowH: 0 };
+    _sheets.push(cur);
+  }
+  const sx = cur.x, sy = cur.y;
+  cur.x += w + 2;
+  if (h > cur.rowH) cur.rowH = h;
+  return { sheet: cur.canvas, g: cur.g, sx, sy, sw: w, sh: h };
+}
+
+function buildOnAtlas(wM, hM, oxM, oyM, zb, drawFn) {
+  const slot = allocAtlasSlot(wM * zb, hM * zb);
+  const g = slot.g;
+  g.save();
+  g.beginPath();
+  g.rect(slot.sx, slot.sy, slot.sw, slot.sh);
+  g.clip();
+  g.translate(slot.sx + oxM * zb, slot.sy + oyM * zb);
+  g.scale(zb, zb);
+  drawFn(g);
+  g.restore();
+  return {
+    sheet: slot.sheet,
+    sx: slot.sx,
+    sy: slot.sy,
+    sw: slot.sw,
+    sh: slot.sh,
+    wM,
+    hM,
+    oxM,
+    oyM,
+  };
+}
+
 function getCached(key, buildFn) {
   let entry = _spriteCache.get(key);
   if (entry) return entry;
-  if (_spriteCache.size >= MAX_CACHE_ENTRIES) {
-    let n = 0;
-    for (const k of _spriteCache.keys()) {
-      _spriteCache.delete(k);
-      if (++n >= 120) break;
-    }
-  }
   entry = buildFn();
   _spriteCache.set(key, entry);
   return entry;
@@ -399,7 +450,7 @@ function drawPolyBlock(g, mat, verts, stage) {
   if (stage > 0) drawBoxCracks(g, 0.7, 0.7, stage);
 }
 
-/** Return cached `{ canvas, wM, hM, oxM, oyM }` for a block entity. */
+/** Return cached atlas sprite descriptor for a block entity. */
 export function getBlockSprite(ent, pxPerM) {
   const zb = pickZoomBucket(pxPerM);
   const stage = blockDamageStage(ent);
@@ -411,14 +462,7 @@ export function getBlockSprite(ent, pxPerM) {
     return getCached(key, () => {
       const pad = 0.08;
       const wM = (r + pad) * 2, hM = (r + pad) * 2;
-      const c = document.createElement('canvas');
-      c.width = Math.max(4, Math.ceil(wM * zb));
-      c.height = Math.max(4, Math.ceil(hM * zb));
-      const g = c.getContext('2d');
-      g.translate(c.width / 2, c.height / 2);
-      g.scale(zb, zb);
-      drawCircleBlock(g, mat, r, stage);
-      return { canvas: c, wM, hM, oxM: wM / 2, oyM: hM / 2 };
+      return buildOnAtlas(wM, hM, wM / 2, hM / 2, zb, (g) => drawCircleBlock(g, mat, r, stage));
     });
   }
 
@@ -437,14 +481,7 @@ export function getBlockSprite(ent, pxPerM) {
       const hM = (y1 - y0) + pad * 2;
       const oxM = -x0 + pad;
       const oyM = -y0 + pad;
-      const c = document.createElement('canvas');
-      c.width = Math.max(4, Math.ceil(wM * zb));
-      c.height = Math.max(4, Math.ceil(hM * zb));
-      const g = c.getContext('2d');
-      g.translate(oxM * zb, oyM * zb);
-      g.scale(zb, zb);
-      drawPolyBlock(g, mat, ent.verts, stage);
-      return { canvas: c, wM, hM, oxM, oyM };
+      return buildOnAtlas(wM, hM, oxM, oyM, zb, (g) => drawPolyBlock(g, mat, ent.verts, stage));
     });
   }
 
@@ -454,18 +491,13 @@ export function getBlockSprite(ent, pxPerM) {
   return getCached(key, () => {
     const pad = 0.06;
     const wM = w + pad * 2, hM = h + pad * 2;
-    const c = document.createElement('canvas');
-    c.width = Math.max(4, Math.ceil(wM * zb));
-    c.height = Math.max(4, Math.ceil(hM * zb));
-    const g = c.getContext('2d');
-    g.translate(c.width / 2, c.height / 2);
-    g.scale(zb, zb);
-    if (mat === 'glass') drawGlassBox(g, w, h);
-    else if (mat === 'stone') drawStoneBox(g, w, h);
-    else if (mat === 'tnt') drawTntBox(g, w, h);
-    else drawWoodBox(g, w, h);
-    drawBoxCracks(g, w, h, stage);
-    return { canvas: c, wM, hM, oxM: wM / 2, oyM: hM / 2 };
+    return buildOnAtlas(wM, hM, wM / 2, hM / 2, zb, (g) => {
+      if (mat === 'glass') drawGlassBox(g, w, h);
+      else if (mat === 'stone') drawStoneBox(g, w, h);
+      else if (mat === 'tnt') drawTntBox(g, w, h);
+      else drawWoodBox(g, w, h);
+      drawBoxCracks(g, w, h, stage);
+    });
   });
 }
 
@@ -802,17 +834,7 @@ export function getPigSprite(ent, pxPerM) {
     const padSide = (variant === 'boss_king' || variant === 'boss_wizard') ? r * 1.40 : r * 1.20;
     const wM = padSide * 2;
     const hM = padTop + padBot;
-    const oxM = padSide;
-    const oyM = padTop;
-
-    const c = document.createElement('canvas');
-    c.width = Math.max(8, Math.ceil(wM * zb));
-    c.height = Math.max(8, Math.ceil(hM * zb));
-    const g = c.getContext('2d');
-    g.translate(oxM * zb, oyM * zb);
-    g.scale(zb, zb);
-    drawPigBase(g, variant, r, stage);
-    return { canvas: c, wM, hM, oxM, oyM, r };
+    return buildOnAtlas(wM, hM, padSide, padTop, zb, (g) => drawPigBase(g, variant, r, stage));
   });
 }
 

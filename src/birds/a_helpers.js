@@ -125,10 +125,10 @@ export function guardExplosiveProj(ctx, ent, groundY = 0.04) {
 }
 
 /**
- * Deterministically pick `count` distributed targets ({x, y, ent}) across live pigs & structure blocks.
- * Ensures multi-projectile abilities carpet the whole fortress instead of overkilling 1 plank.
+ * Deterministically pick `count` distributed targets ({x, y, ent}) within `findTargets`'s default
+ * local reach (Amendment A1: 20 m from refX, refY; fallback inside local actionRect).
  */
-export function distributeTargets(ctx, refX, refY, count, { aheadOnly = false, explicitTarget = null } = {}) {
+export function distributeTargets(ctx, refX, refY, count, { aheadOnly = false, explicitTarget = null, rect = null } = {}) {
   const pigsAll = ctx.findTargets({ x: refX, y: refY, kinds: [KIND.PIG], fallbackBlocks: false, max: 60 });
   const blocksAll = ctx.findTargets({ x: refX, y: refY, kinds: [KIND.BLOCK], fallbackBlocks: false, max: 180 });
 
@@ -137,7 +137,7 @@ export function distributeTargets(ctx, refX, refY, count, { aheadOnly = false, e
   let blocks = aheadOnly ? blocksAll.filter((e) => ctx.pos(e).x >= refX - 1.5) : blocksAll;
   if (!blocks.length) blocks = blocksAll;
 
-  // Sort blocks across horizontal span so buckets cover left-to-right of the fortress.
+  // Sort blocks across horizontal span so buckets cover left-to-right of the local cluster.
   const blocksByX = blocks.slice().sort((a, b) => (ctx.pos(a).x - ctx.pos(b).x) || (a.id - b.id));
   const tnts = blocksByX.filter((e) => e.mat === 'tnt');
 
@@ -167,7 +167,9 @@ export function distributeTargets(ctx, refX, refY, count, { aheadOnly = false, e
     }
   }
 
-  const rect = ctx.actionRect();
+  const r = rect || ctx.actionRect();
+  const span = Math.max(4, r.x1 - r.x0);
+  const pad = Math.min(3.5, span * 0.18);
   const out = [];
   for (let i = 0; i < count; i++) {
     if (pool.length) {
@@ -182,8 +184,8 @@ export function distributeTargets(ctx, refX, refY, count, { aheadOnly = false, e
     } else {
       const u = (i + 0.5) / Math.max(1, count);
       out.push({
-        x: rect.x0 + 4 + (rect.x1 - rect.x0 - 8) * u,
-        y: ctx.range(1.0, Math.min(6.0, rect.y1 * 0.45)),
+        x: r.x0 + pad + (span - 2 * pad) * u,
+        y: ctx.range(1.0, Math.min(6.0, r.y1 * 0.45)),
         ent: null,
       });
     }
@@ -191,8 +193,8 @@ export function distributeTargets(ctx, refX, refY, count, { aheadOnly = false, e
   return out;
 }
 
-/** Pick a primary world target: explicit tap point -> nearest pig ahead -> nearest pig -> densest block. */
-export function pickPrimaryTarget(ctx, refX, refY, explicitTarget = null) {
+/** Pick a primary world target within default `findTargets` reach of (refX, refY). */
+export function pickPrimaryTarget(ctx, refX, refY, { explicitTarget = null, rect = null } = {}) {
   if (explicitTarget && Number.isFinite(explicitTarget.x) && Number.isFinite(explicitTarget.y)) {
     return { x: explicitTarget.x, y: Math.max(0.5, explicitTarget.y), ent: null };
   }
@@ -206,7 +208,7 @@ export function pickPrimaryTarget(ctx, refX, refY, explicitTarget = null) {
     const p = ctx.pos(any[0]);
     return { x: p.x, y: p.y, ent: any[0] };
   }
-  const r = ctx.actionRect();
+  const r = rect || ctx.actionRect();
   return { x: (r.x0 + r.x1) * 0.55, y: 2.2, ent: null };
 }
 
@@ -223,6 +225,53 @@ export function makeHudIcon(birdDef, scale = 0.36, offsetX = 0.48, offsetY = 0.5
     birdDef.drawBird(g, { r: size * scale, data: {}, status: {}, skin: birdDef.id }, 0);
     g.restore();
   };
+}
+
+/**
+ * Draw a silky-smooth continuous trail polyline without per-segment round-cap beading.
+ * `layers` = array of { color: 'r,g,b', alpha: 0.8, widthM: 0.45, minPx: 2 }.
+ */
+export function drawSmoothRibbon(g, cam, pts, t, windowS, layers) {
+  if (!pts || pts.length < 2) return;
+  let i0 = 0;
+  while (i0 < pts.length - 1 && t - pts[i0].t > windowS) i0++;
+  if (pts.length - i0 < 2) return;
+
+  const pTail = pts[i0];
+  const pHead = pts[pts.length - 1];
+  const headFade = clamp(1 - (t - pHead.t) / windowS, 0, 1);
+  if (headFade <= 0.02) return;
+
+  const x0 = cam.sx(pTail.x), y0 = cam.sy(pTail.y);
+  const x1 = cam.sx(pHead.x), y1 = cam.sy(pHead.y);
+  const sameSpot = Math.hypot(x1 - x0, y1 - y0) < 2;
+
+  g.save();
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+
+  g.beginPath();
+  g.moveTo(x0, y0);
+  for (let i = i0 + 1; i < pts.length; i++) {
+    g.lineTo(cam.sx(pts[i].x), cam.sy(pts[i].y));
+  }
+
+  for (const L of layers) {
+    const aPeak = (L.alpha * headFade).toFixed(3);
+    const aMid = (L.alpha * 0.55 * headFade).toFixed(3);
+    if (sameSpot) {
+      g.strokeStyle = `rgba(${L.color}, ${aPeak})`;
+    } else {
+      const grad = g.createLinearGradient(x0, y0, x1, y1);
+      grad.addColorStop(0, `rgba(${L.color}, 0)`);
+      grad.addColorStop(0.45, `rgba(${L.color}, ${aMid})`);
+      grad.addColorStop(1, `rgba(${L.color}, ${aPeak})`);
+      g.strokeStyle = grad;
+    }
+    g.lineWidth = Math.max(L.minPx || 2, L.widthM * cam.s);
+    g.stroke();
+  }
+  g.restore();
 }
 
 /** Draw classic Angry Birds dual cartoon eyes + pupils in local meter frame (y down). */
