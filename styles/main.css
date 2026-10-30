@@ -102,6 +102,35 @@ html, body {
   opacity: 0.86;
 }
 
+/* H1 (#104): In AIM shrink 技能 button to a calm info chip (72x72 px: <=76 px & >=68 px, 70% opacity, no pulse) */
+.hud-ability-btn.aim-chip {
+  width: 72px;
+  height: 72px;
+  min-width: 72px;
+  min-height: 72px;
+  padding: 4px 3px;
+  gap: 2px;
+  border-radius: 15px;
+  border-width: 2.5px;
+  background: rgba(24, 32, 52, 0.88);
+  border-color: rgba(255, 224, 130, 0.65);
+  color: #fff5cc;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  opacity: 0.7;
+  animation: none;
+}
+
+.hud-ability-btn.aim-chip .ability-label {
+  font-size: 11.5px;
+  line-height: 1.1;
+  white-space: nowrap;
+  text-shadow: 0 1px 0 #000;
+}
+
+.hud-ability-btn.aim-chip:active {
+  transform: none;
+}
+
 .hud-ability-btn.ready {
   opacity: 1;
   background: linear-gradient(180deg, #fff6ad 0%, #ff7a1a 100%);

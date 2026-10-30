@@ -8,9 +8,14 @@ import { makeAbilityCtx } from './ability_ctx.js';
 import { BIRDS } from '../birds/index.js';
 import { LEVELS, getLevel } from '../levels/levels.js';
 
-const TURN_TIMEOUT_S = 12;       // hard cap per bird turn
-const REST_SPEED = 0.35;         // bird considered resting below this speed (m/s)
-const REST_TIME = 1.2;           // seconds resting before the bird poofs
+const TURN_TIMEOUT_S = 9.0;      // hard cap per bird turn (P1: 9 s after launch)
+const REST_SPEED = 0.45;         // bird considered resting below this speed (m/s)
+const REST_TIME = 0.65;          // seconds resting before an untapped bird poofs
+const POST_ABILITY_REST_S = 0.20;
+const POST_ABILITY_POOF_S = 0.45;
+const QUIET_HOLD_S = 0.6;        // settle hold once awake <= 6 or KE < threshold (P1)
+const AWAKE_KE_BASE = 8.0;       // base Joules threshold for impact-capable in-zone KE
+const AWAKE_KE_PER_BODY = 1.6;   // per-awake-body Joules allowance for large rubble piles
 const CLEAR_GRACE_S = 1.2;       // after the last pig dies, let the chaos play before CLEAR
 const SETTLE_MAX_S = 2.5;        // after out of birds, wait up to 2.5 s before FAIL
 
@@ -65,7 +70,7 @@ export class Game {
     this.birdsUsed = 0;
     this.bird = null;
     this.abilityUsed = false;
-    this.flightT = 0; this.restT = 0; this.clearT = null; this.turnT = 0; this.settleT = 0;
+    this.flightT = 0; this.restT = 0; this.quietT = 0; this.clearT = null; this.turnT = 0; this.settleT = 0;
     this.firstPigKillT = null; this.launchT = null; this.abilityT = null;
     this.events = [];   // compact deterministic log for tests: {t, type, ...}
 
@@ -198,7 +203,7 @@ export class Game {
     this.lastBirdPos = { x, y };
     this.abilityUsed = false;
     this.holdUntilT = 0;
-    this.flightT = 0; this.restT = 0; this.turnT = 0;
+    this.flightT = 0; this.restT = 0; this.quietT = 0; this.turnT = 0;
     this.birdsUsed++;
     this.launchT = +this.world.time.toFixed(4);
     this.abilityT = null;
@@ -281,8 +286,10 @@ export class Game {
     const w = this.world;
     this.flightT += dt;
     this.turnT += dt;
-    const tasksLive = w.hasActiveTasks();
     const holdLive = w.time < this.holdUntilT;
+    const postAbilityAge = (this.abilityUsed && this.abilityT != null) ? (w.time - this.abilityT) : 0;
+    // Ignore passive non-lethal poison watcher tasks once holdTurn & active ability window (>= 3.5 s) have elapsed.
+    const tasksLive = w.hasActiveTasks() && !(this.abilityUsed && !holdLive && postAbilityAge >= 3.5 && !w.hasLethalPoison());
     const abilityBusy = tasksLive || holdLive;
 
     const b = this.bird;
@@ -290,16 +297,34 @@ export class Game {
       if (abilityBusy) {
         this.restT = 0;
       } else {
+        if (this.abilityUsed && b.body.getGravityScale() < 0.8) {
+          b.body.setGravityScale(1);
+          b.body.setAwake(true);
+        }
         const v = b.body.getLinearVelocity();
         const p = b.body.getPosition();
-        const spd = Math.hypot(v.x, v.y);
-        // Gentle ground rolling resistance for slow trickle (< 3 m/s) so missed shots settle naturally.
-        if (spd > 0.05 && spd < 3.0 && Math.abs(v.y) < 0.25 && p.y <= (b.r || 0.45) + 0.06) {
-          const damp = Math.max(0, 1 - 1.5 * dt);
-          b.body.setLinearVelocity({ x: v.x * damp, y: v.y });
+        let spd = Math.hypot(v.x, v.y);
+        if (this.abilityUsed) {
+          // Smoothly brake & retire spent bird once its holdTurn & ability tasks have finished.
+          b.data._postAbilityT = (b.data._postAbilityT || 0) + dt;
+          const damp = Math.max(0, 1 - 6.0 * dt);
+          const nvx = v.x * damp;
+          const nvy = v.y * damp;
+          b.body.setLinearVelocity({ x: nvx, y: nvy });
+          spd = Math.hypot(nvx, nvy);
+        } else if (spd > 0.05 && spd < 5.0 && (b.data._touched || (Math.abs(v.y) < 0.3 && p.y <= (b.r || 0.45) + 0.08))) {
+          const damp = Math.max(0, 1 - 2.0 * dt);
+          const nvx = v.x * damp;
+          b.body.setLinearVelocity({ x: nvx, y: v.y });
+          spd = Math.hypot(nvx, v.y);
         }
+        const restReq = this.abilityUsed ? POST_ABILITY_REST_S : REST_TIME;
         if (spd < REST_SPEED) this.restT += dt; else this.restT = 0;
-        if (this.restT > REST_TIME) { w.remove(b); bus.emit(EV.SFX, { name: 'poof' }); }
+        if (this.restT > restReq || (this.abilityUsed && (b.data._postAbilityT || 0) >= POST_ABILITY_POOF_S)) {
+          this.lastBirdPos = { x: p.x, y: p.y };
+          w.remove(b);
+          bus.emit(EV.SFX, { name: 'poof' });
+        }
       }
     }
 
@@ -308,8 +333,14 @@ export class Game {
     for (let i = 0; i < w.ents.length; i++) {
       if (w.ents[i].alive && w.ents[i].kind === KIND.PROJ) { projLive = true; break; }
     }
-    const settled = w.countAwake() <= 2;
-    if ((birdDone && !projLive && !abilityBusy && settled && this.turnT > 1.0) || this.turnT > TURN_TIMEOUT_S) {
+    const awake = w.countAwake();
+    const calm = awake <= 6 || w.awakeKineticEnergy() < AWAKE_KE_BASE + AWAKE_KE_PER_BODY * awake;
+    if (birdDone && !projLive && !abilityBusy && calm) {
+      this.quietT += dt;
+    } else {
+      this.quietT = 0;
+    }
+    if ((this.quietT >= QUIET_HOLD_S && this.turnT >= 1.0) || this.turnT >= TURN_TIMEOUT_S) {
       this._endTurn('auto');
     }
   }
@@ -343,8 +374,10 @@ export class Game {
   _updateSettle(dt) {
     const w = this.world;
     this.settleT += dt;
-    const busy = w.hasActiveTasks() || w.hasPoisonedPigs();
-    if (w.pigs().length > 0 && (this.settleT > SETTLE_MAX_S || (this.settleT > 1.0 && !busy && w.countAwake() <= 2))) {
+    const busy = w.hasActiveTasks() || w.hasLethalPoison();
+    const awake = w.countAwake();
+    const calm = awake <= 6 || w.awakeKineticEnergy() < AWAKE_KE_BASE + AWAKE_KE_PER_BODY * awake;
+    if (w.pigs().length > 0 && (this.settleT > SETTLE_MAX_S || (this.settleT > 0.8 && !busy && calm))) {
       this._finish(false);
     }
   }
@@ -435,6 +468,7 @@ export class Game {
 
   _triggerBirdContact(bird, other, info) {
     if (!bird || bird !== this.bird || !bird.alive || !other || other.kind === KIND.PROJ) return;
+    bird.data._touched = true;
     const def = BIRDS[bird.data.birdId];
     if (def && def.onContact) {
       try { def.onContact(this.ctx, bird, other, info); } catch (err) { console.error('[onContact]', err); }
@@ -453,6 +487,8 @@ export class Game {
   }
 
   _onBeginContact(a, b, x, y, speed, sensor) {
+    if (a && a === this.bird && b && b.kind !== KIND.PROJ) a.data._touched = true;
+    if (b && b === this.bird && a && a.kind !== KIND.PROJ) b.data._touched = true;
     if (sensor) {
       const info = { J: 0, v: speed, x, y, sensor: true };
       this._triggerBirdContact(a, b, info);

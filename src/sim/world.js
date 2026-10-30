@@ -622,10 +622,53 @@ export class SimWorld {
     return n;
   }
 
+  /** Impact-capable kinetic energy (J) of awake blocks & pigs within the surviving pig zone. */
+  awakeKineticEnergy() {
+    let px0 = Infinity, px1 = -Infinity, py1 = 0, hasPigs = false;
+    for (let i = 0; i < this.ents.length; i++) {
+      const e = this.ents[i];
+      if (!e.alive || e.kind !== KIND.PIG) continue;
+      hasPigs = true;
+      const p = e.body.getPosition();
+      if (p.x < px0) px0 = p.x;
+      if (p.x > px1) px1 = p.x;
+      if (p.y > py1) py1 = p.y;
+    }
+    let ke = 0;
+    for (let i = 0; i < this.ents.length; i++) {
+      const e = this.ents[i];
+      if (!e.alive || e.isStatic || !e.body.isAwake()) continue;
+      if (e.kind !== KIND.BLOCK && e.kind !== KIND.PIG) continue;
+      const b = e.body;
+      const v = b.getLinearVelocity();
+      const v2 = v.x * v.x + v.y * v.y;
+      if (v2 < IMPACT_MIN_SPEED * IMPACT_MIN_SPEED) continue;
+      if (hasPigs) {
+        const p = b.getPosition();
+        if (p.x < px0 - 6 || p.x > px1 + 6 || p.y > py1 + 8) continue;
+      }
+      const w = b.getAngularVelocity();
+      ke += 0.5 * b.getMass() * v2 + 0.5 * b.getInertia() * w * w;
+    }
+    return ke;
+  }
+
   hasPoisonedPigs() {
     for (let i = 0; i < this.ents.length; i++) {
       const e = this.ents[i];
       if (e.alive && e.kind === KIND.PIG && e.status.poison) return true;
+    }
+    return false;
+  }
+
+  /** True if any alive pig has enough remaining poison DoT to kill it before poison expires. */
+  hasLethalPoison() {
+    for (let i = 0; i < this.ents.length; i++) {
+      const e = this.ents[i];
+      const po = e.alive && e.kind === KIND.PIG ? e.status.poison : null;
+      if (!po) continue;
+      const rem = Math.max(0, po.until - this.time) * (po.dps || 0);
+      if (rem >= e.hp - 1) return true;
     }
     return false;
   }

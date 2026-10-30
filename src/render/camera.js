@@ -1,24 +1,26 @@
-// Camera (owner: render-art). Implements docs/DESIGN.md §5:
-//   - Intro pan: 0.6 s on structure -> 1.2 s cubic ease to AIM; any tap / skipIntro() skips.
-//   - AIM: frames [sling.x - 5, max(sling.x + 22, structure.x1 + 2)] if world height <= 24 m,
-//     else frames the sling area (<= 24 m tall) and exposes offscreenPigsHint ("→ 🐷").
-//     Portrait fits width to [sling.x - 4, structure.x1 + 2] with extra sky above.
-//     Ground band ~10-14% of viewport bottom.
-//   - FOLLOW: bird + 0.35 s velocity lookahead, zoom out with speed.
-//   - CARNAGE: after ability or first impact, frames bbox of active effects + awake bodies +
-//     live projectiles + bird, padded 3 m; scale clamped [whole level, 10 m tall];
+// Camera (owner: render-art). Implements docs/DESIGN.md §5 + Fun Gate r1 (R1–R4):
+//   - R1 Ground band: landscape ground line >= 18% from bottom AND >= HUD bottom-button height + 12 px;
+//     portrait ground line at ~64% height (36% ground band). HUD bottom buttons always sit over ground.
+//   - R2 AIM framing: maps [sling.x - 5, max(sling.x + 22, structure.x1 + 2)] into [0, w - 130 px]
+//     when effective world height <= 24 m, else frames the sling area + exposes offscreenPigsHint.
+//     Portrait fits width to [sling.x - 4, structure.x1 + 2] with ground at 64% height.
+//   - R3 Fast return to AIM: on BIRD_READY whip-pans back so pouch is on-screen <= 0.3 s and
+//     converged <= 0.45 s (<= 0.6 s gate).
+//   - R4 CARNAGE bbox: frames active effects (origin only, never beam far-endpoints) + awake bodies +
+//     live projectiles + bird within structure +- 8 m, padded 3 m; scale clamp [whole level, 10 m tall];
 //     position tau = 0.25 s, zoom tau = 0.45 s.
-//   - FREE: pan(dxPx, dyPx), zoomAt(px, py, factor), userActive(), auto-return 4 s after last
-//     gesture or on next bird. Clamped: never show below y = -2 or > 3 m beyond level bounds.
+//   - FREE: pan(dxPx, dyPx), zoomAt(px, py, factor), userActive(), auto-return 4 s after last gesture
+//     or on next bird. Clamped against underground & bounds + margin.
 
 import { STATE, KIND, EV } from '../contracts.js';
 import { bus } from '../core/bus.js';
 
 const INTRO_HOLD_S = 0.6;
 const INTRO_EASE_S = 1.2;
+const RETURN_DUR_S = 0.44;
 const FREE_RETURN_S = 4.0;
-const MIN_WORLD_Y = -2.0;
 const BOUNDS_PAD_X = 3.0;
+const AIM_RIGHT_HUD_PX = 130;
 
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
@@ -48,24 +50,37 @@ export class Camera {
     this._introT = 0;
     this._introPose = null;
     this._aimPose = null;
+    this._returnActive = false;
+    this._returnT = 0;
+    this._returnFrom = null;
     this._carnage = false;
     this._lastGame = null;
+    this._cachedHudBottomPx = 0;
+    this._hudCheckT = -1;
 
     bus.on(EV.LEVEL_START, () => {
       this._freeTimer = 0;
       this._carnage = false;
+      this._returnActive = false;
     });
     bus.on(EV.BIRD_READY, () => {
       this._freeTimer = 0;
       this._carnage = false;
+      if (!this._introActive) {
+        this._returnActive = true;
+        this._returnT = 0;
+        this._returnFrom = { cx: this.cx, cy: this.cy, s: this.s };
+      }
     });
     bus.on(EV.LAUNCH, () => {
       this._freeTimer = 0;
       this._introActive = false;
+      this._returnActive = false;
       this._carnage = false;
     });
     bus.on(EV.ABILITY, () => {
       this._introActive = false;
+      this._returnActive = false;
       this._carnage = true;
     });
     const markImpact = () => {
@@ -82,6 +97,7 @@ export class Camera {
   resize(w, h) {
     this.w = Math.max(1, w || 800);
     this.h = Math.max(1, h || 600);
+    this._hudCheckT = -1;
     if (this._lastGame && this._lastGame.level && this._lastGame.world) {
       const sb = this._structureBounds(this._lastGame);
       this._introPose = this._computeStructurePose(this._lastGame, sb);
@@ -90,10 +106,49 @@ export class Camera {
         this.cx = this._introPose.cx;
         this.cy = this._introPose.cy;
         this.s = this._introPose.s;
+      } else if (this._lastGame.state === STATE.AIM && !this._introActive && !this._returnActive && this._freeTimer <= 0) {
+        this.cx = this._aimPose.cx;
+        this.cy = this._aimPose.cy;
+        this.s = this._aimPose.s;
       }
       this._clamp(this._lastGame);
       this._updateOffscreenPigs(this._lastGame);
     }
+  }
+
+  /**
+   * Rest ground-band thickness in CSS px from the bottom of the viewport (R1):
+   *   - Portrait (h > w): 36% of height -> ground line at 64% height from top.
+   *   - Landscape (w >= h): >= 19% of height AND >= FLIGHT HUD bottom-button height + 12 px.
+   */
+  groundBandPx() {
+    if (this.h > this.w) {
+      return Math.round(0.36 * this.h);
+    }
+    // Full-size FLIGHT #btn-ability clearance + 12 px margin:
+    //   max-height <= 460 (844x390): bottom 10 + height 82 + 12 = 104 -> 106 px
+    //   desktop/tablet (1280x800, 1024x768): bottom 16 + height 100 + 12 = 128 -> 132 px
+    const cssFlightClearPx = this.h <= 460 ? 106 : 132;
+    let domClearPx = this._cachedHudBottomPx;
+    if (typeof document !== 'undefined') {
+      const now = typeof performance !== 'undefined' ? performance.now() : 0;
+      if (this._hudCheckT < 0 || now - this._hudCheckT > 400) {
+        this._hudCheckT = now;
+        let maxClear = 0;
+        const b1 = document.getElementById('btn-ability');
+        const b2 = document.getElementById('btn-next');
+        for (const el of [b1, b2]) {
+          if (!el || el.hidden) continue;
+          const r = el.getBoundingClientRect();
+          if (r.height > 4 && r.top < this.h) {
+            maxClear = Math.max(maxClear, this.h - r.top + 12);
+          }
+        }
+        domClearPx = this._cachedHudBottomPx = Math.ceil(maxClear);
+      }
+    }
+    const pctPx = Math.ceil(0.19 * this.h);
+    return Math.min(Math.round(0.42 * this.h), Math.max(pctPx, cssFlightClearPx, domClearPx));
   }
 
   sx(x) { return (x - this.cx) * this.s + this.w / 2 + this.shakeX; }
@@ -127,6 +182,7 @@ export class Camera {
   pan(dxPx, dyPx) {
     if (!Number.isFinite(dxPx) || !Number.isFinite(dyPx)) return;
     if (this._introActive) this.skipIntro();
+    this._returnActive = false;
     this.cx -= dxPx / this.s;
     this.cy += dyPx / this.s;
     this._freeTimer = FREE_RETURN_S;
@@ -140,6 +196,7 @@ export class Camera {
   zoomAt(px, py, factor) {
     if (!Number.isFinite(factor) || factor <= 0) return;
     if (this._introActive) this.skipIntro();
+    this._returnActive = false;
     const wx = (px - this.w / 2) / this.s + this.cx;
     const wy = this.cy - (py - this.h / 2) / this.s;
     const [sMin, sMax] = this._scaleLimits(this._lastGame, true);
@@ -166,6 +223,7 @@ export class Camera {
   /** Immediately end the intro pan and snap to AIM framing. */
   skipIntro(game = this._lastGame) {
     this._introActive = false;
+    this._returnActive = false;
     this._introT = INTRO_HOLD_S + INTRO_EASE_S;
     if (game && game.level && game.world) {
       const sb = this._structureBounds(game);
@@ -183,6 +241,7 @@ export class Camera {
   snapTo(game, opts = {}) {
     this._lastGame = game;
     this._freeTimer = 0;
+    this._returnActive = false;
     this._carnage = false;
     this.shakeX = 0;
     this.shakeY = 0;
@@ -224,6 +283,7 @@ export class Camera {
     }
     if (game.state !== STATE.AIM && game.state !== STATE.INTRO) {
       this._introActive = false;
+      this._returnActive = false;
     }
 
     // 1. User FREE pan/zoom override (4 s auto-return)
@@ -273,14 +333,34 @@ export class Camera {
     } else if (game.state === STATE.SETTLE || (game.state === STATE.CLEAR && game.clearT != null)) {
       this._updateCarnage(stepDt, game);
     } else {
-      // AIM, TITLE background, PAUSED, FAIL
+      // AIM (including fast R3 BIRD_READY whip-pan), TITLE background, PAUSED, FAIL
       const sb = this._structureBounds(game);
       const aim = this._aimPose = this._computeAimPose(game, sb);
-      const kp = 1 - Math.exp(-stepDt / 0.28);
-      const kz = 1 - Math.exp(-stepDt / 0.35);
-      this.cx += (aim.cx - this.cx) * kp;
-      this.cy += (aim.cy - this.cy) * kp;
-      this.s += (aim.s - this.s) * kz;
+      if (this._returnActive && this._returnFrom) {
+        this._returnT += stepDt;
+        if (this._returnT >= RETURN_DUR_S) {
+          this._returnActive = false;
+          this.cx = aim.cx;
+          this.cy = aim.cy;
+          this.s = aim.s;
+        } else {
+          const r = clamp(this._returnT / RETURN_DUR_S, 0, 1);
+          const uPos = 1 - Math.pow(1 - r, 3.8);
+          const uZoom = 1 - Math.pow(1 - r, 4.6);
+          const f = this._returnFrom;
+          const invS0 = 1 / Math.max(1, f.s);
+          const invS1 = 1 / Math.max(1, aim.s);
+          this.s = 1 / (invS0 + (invS1 - invS0) * uZoom);
+          this.cx = f.cx + (aim.cx - f.cx) * uPos;
+          this.cy = f.cy + (aim.cy - f.cy) * uPos;
+        }
+      } else {
+        const kp = 1 - Math.exp(-stepDt / 0.11);
+        const kz = 1 - Math.exp(-stepDt / 0.13);
+        this.cx += (aim.cx - this.cx) * kp;
+        this.cy += (aim.cy - this.cy) * kp;
+        this.s += (aim.s - this.s) * kz;
+      }
     }
 
     this._clamp(game);
@@ -307,46 +387,51 @@ export class Camera {
 
   _scaleLimits(game, isFree = false) {
     const lb = this._levelBounds(game);
-    const maxSpanX = Math.max(20, (lb.x1 + BOUNDS_PAD_X) - (lb.x0 - BOUNDS_PAD_X));
-    const maxSpanY = Math.max(16, (lb.y1 + 10) - MIN_WORLD_Y);
     const isPortrait = this.h > this.w;
+    const rightPadPx = isPortrait ? 0 : Math.min(AIM_RIGHT_HUD_PX, Math.round(this.w * 0.22));
+    const availW = Math.max(140, this.w - rightPadPx);
+    const availSkyPx = Math.max(100, this.h - this.groundBandPx());
+    const maxSpanX = Math.max(20, (lb.x1 + BOUNDS_PAD_X) - (lb.x0 - BOUNDS_PAD_X));
+    const maxSkyY = Math.max(14, lb.y1 + 8);
     const sMin = isPortrait
       ? this.w / maxSpanX
-      : Math.max(this.w / maxSpanX, this.h / maxSpanY);
-    // CARNAGE max zoom = 10 m tall; FREE allows slightly closer inspection (~7.5 m tall).
+      : Math.min(this.w / maxSpanX, Math.max(availW / maxSpanX, availSkyPx / maxSkyY));
+    // CARNAGE max zoom = 10 m tall; FREE allows closer inspection (~7.5 m tall).
     const minTall = isFree ? 7.5 : 10.0;
     const sMax = isPortrait
       ? Math.max(sMin, this.w / minTall)
-      : Math.max(sMin, this.h / minTall);
+      : Math.max(sMin, availSkyPx / minTall);
     return [sMin, sMax];
   }
 
-  /** Place cy so ground (y = 0) leaves ~12% ground band at bottom, while y0 >= -2. */
-  _groundAlignedCy(s, minTopY = 0) {
-    const worldH = this.h / s;
-    const groundBand = Math.min(-MIN_WORLD_Y, 0.12 * worldH); // <= 2.0 m below y=0
-    let y0 = -groundBand;
-    if (y0 + worldH < minTopY) {
-      y0 = Math.max(MIN_WORLD_Y, minTopY - worldH);
-    }
-    return y0 + worldH / 2;
+  /** Place cy so ground (y = 0) sits exactly at `h - groundBandPx()` (R1). */
+  _groundAlignedCy(s) {
+    const gb = this.groundBandPx();
+    return (this.h / 2 - gb) / Math.max(1, s);
   }
 
   _computeStructurePose(game, sb) {
     const [sMin] = this._scaleLimits(game, false);
     const isPortrait = this.h > this.w;
+    const gb = this.groundBandPx();
+    const topHudPx = isPortrait ? Math.min(168, this.h * 0.20) : (this.h <= 460 ? 52 : 76);
+    const availSkyPx = Math.max(100, (this.h - gb) - topHudPx);
     const x0 = sb.x0 - 3.5;
     const x1 = Math.max(x0 + 14, sb.x1 + 3.5);
-    const topY = Math.max(sb.y1 + 3.5, 11);
+    const topY = Math.max(sb.y1 + 2.5, 9.5);
     let s;
     if (isPortrait) {
-      s = clamp(this.w / Math.max(14, x1 - x0), sMin, this.w / 11);
-    } else {
-      const sFit = Math.min(this.w / (x1 - x0), this.h / (topY + 1.8));
-      s = clamp(sFit, sMin, this.h / 15.5);
+      s = clamp(Math.min(this.w / Math.max(14, x1 - x0), availSkyPx / topY), sMin, this.w / 11);
+      const cx = (x0 + x1) / 2;
+      const cy = this._groundAlignedCy(s);
+      return this._clampPose(game, { cx, cy, s });
     }
-    const cx = (x0 + x1) / 2;
-    const cy = this._groundAlignedCy(s, topY);
+    const rightPadPx = Math.min(AIM_RIGHT_HUD_PX, Math.round(this.w * 0.22));
+    const availW = Math.max(160, this.w - rightPadPx);
+    const sFit = Math.min(availW / (x1 - x0), availSkyPx / topY);
+    s = clamp(sFit, sMin, availSkyPx / 13.5);
+    const cx = (x0 + x1) / 2 + (rightPadPx / 2) / s;
+    const cy = this._groundAlignedCy(s);
     return this._clampPose(game, { cx, cy, s });
   }
 
@@ -355,42 +440,51 @@ export class Camera {
     const pouch = game.pouch ? game.pouch() : { x: sling.x, y: sling.y + 2 };
     const [sMin] = this._scaleLimits(game, false);
     const isPortrait = this.h > this.w;
+    const gb = this.groundBandPx();
 
-    // Portrait: fit width to [sling.x - 4, structure.x1 + 2], extra sky above.
+    // Portrait (R1 + §5): fit width to [sling.x - 4, structure.x1 + 2], ground at ~64% height.
     if (isPortrait) {
       const x0 = sling.x - 4;
       const x1 = Math.max(sling.x + 18, sb.x1 + 2);
-      const topReq = Math.max(sb.y1 + 2.5, pouch.y + 2.5, 10);
-      let s = this.w / Math.max(12, x1 - x0);
-      s = Math.min(s, this.h / (topReq + 2.0));
+      const topHudPx = Math.min(168, this.h * 0.20);
+      const availSkyPx = Math.max(120, (this.h - gb) - topHudPx);
+      const topReq = Math.max(sb.y1 + 1.8, pouch.y + 2.2, 8.5);
+      let s = Math.min(this.w / Math.max(12, x1 - x0), availSkyPx / topReq);
       s = Math.max(sMin, s);
       const cx = (x0 + x1) / 2;
-      const cy = this._groundAlignedCy(s, topReq);
+      const cy = this._groundAlignedCy(s);
       return this._clampPose(game, { cx, cy, s });
     }
 
-    // Landscape: try framing [sling.x - 5, max(sling.x + 22, structure.x1 + 2)].
+    // Landscape (R1 + R2): map [sling.x - 5, max(sling.x + 22, structure.x1 + 2)] into [0, w - 130 px].
+    const rightPadPx = Math.min(AIM_RIGHT_HUD_PX, Math.round(this.w * 0.22));
+    const availW = Math.max(160, this.w - rightPadPx);
+    const topHudPx = this.h <= 460 ? 50 : 74;
+    const availSkyPx = Math.max(100, (this.h - gb) - topHudPx);
+
     const x0 = sling.x - 5;
     const x1 = Math.max(sling.x + 22, sb.x1 + 2);
-    const topReq = Math.max(sb.y1 + 2.8, pouch.y + 2.8, 10.5);
-    const sFull = Math.min(this.w / (x1 - x0), this.h / (topReq + 1.85));
-    const worldHFull = this.h / sFull;
+    const topReq = Math.max(sb.y1 + 1.8, pouch.y + 2.2, 8.5);
+    const sX = availW / Math.max(12, x1 - x0);
+    const sY = availSkyPx / topReq;
+    const sFull = Math.min(sX, sY);
+    const fitsSingleScreen = (x1 - x0) <= 38.5 && (this.h - gb) / sFull <= 26.0;
 
-    if (worldHFull <= 24.0) {
+    if (fitsSingleScreen) {
       const s = Math.max(sMin, sFull);
+      // Map [x0, x1] centered inside [0, w - rightPadPx]; if height-constrained, keep sling comfortable on left.
+      const cxCenteredInSafe = (x0 + x1) / 2 + (rightPadPx / 2) / s;
       const halfW = (this.w / 2) / s;
-      // Keep sling.x - 4.5 comfortably inside the left edge if height-constrained.
-      const cx = Math.min((x0 + x1) / 2, (sling.x - 4.2) + halfW);
-      const cy = this._groundAlignedCy(s, topReq);
+      const cx = Math.min(cxCenteredInSafe, (sling.x - 4.5) + halfW);
+      const cy = this._groundAlignedCy(s);
       return this._clampPose(game, { cx, cy, s });
     }
 
-    // Wide level (> 24 m tall if fit whole): frame the sling area at <= 22.5 m tall.
-    const targetH = 22.0;
-    const s = Math.max(sMin, this.h / targetH);
+    // Wide level (> 24 m effective height): frame sling area cleanly + show offscreen pig hint.
+    const s = Math.max(sMin, (this.h - gb) / 18.5);
     const halfW = (this.w / 2) / s;
-    const cx = (sling.x - 4.8) + halfW;
-    const cy = this._groundAlignedCy(s, Math.max(pouch.y + 3.0, 10));
+    const cx = (sling.x - 5.0) + halfW;
+    const cy = this._groundAlignedCy(s);
     return this._clampPose(game, { cx, cy, s });
   }
 
@@ -404,13 +498,15 @@ export class Camera {
     const v = b.body.getLinearVelocity();
     const spd = Math.hypot(v.x, v.y);
     const tcx = p.x + v.x * 0.35;
-    const tcy = p.y + v.y * 0.35;
 
     const [sMin, sMax] = this._scaleLimits(game, false);
     const isPortrait = this.h > this.w;
-    const targetSpan = 14.5 + clamp(spd, 0, 32) * 0.32;
-    const rawS = isPortrait ? this.w / (targetSpan * 0.95) : this.h / targetSpan;
+    const gb = this.groundBandPx();
+    const targetSpan = 14.5 + clamp(spd, 0, 32) * 0.30;
+    const rawS = isPortrait ? this.w / (targetSpan * 0.95) : (this.h - gb) / (targetSpan * 0.85);
     const ts = clamp(rawS, sMin, sMax);
+    const restCy = this._groundAlignedCy(ts);
+    const tcy = Math.max(restCy, p.y + v.y * 0.25 - 1.5);
 
     const kp = 1 - Math.exp(-dt / 0.20);
     const kz = 1 - Math.exp(-dt / 0.32);
@@ -421,20 +517,28 @@ export class Camera {
 
   _updateCarnage(dt, game) {
     const w = game.world;
-    const lb = this._levelBounds(game);
     const sb = this._structureBounds(game);
     const sling = game.level.sling || { x: 0, y: 0 };
+
+    // R4: ignore beam far-endpoints and runaway bodies/projectiles beyond structure +- 8 m.
+    const corrX0 = sb.x0 - 8.0;
+    const corrX1 = sb.x1 + 8.0;
+    const corrY0 = -1.0;
+    const corrY1 = sb.y1 + 8.0;
 
     let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
     const include = (x, y, r = 0.5) => {
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      // Ignore debris already plunging far off-stage so CARNAGE stays tight on the action.
-      if (y < -2.5 || x < lb.x0 - 4 || x > lb.x1 + 4 || y > lb.y1 + 12) return;
-      const rr = Math.max(0.3, Math.min(8, r || 0.5));
-      if (x - rr < bx0) bx0 = x - rr;
-      if (x + rr > bx1) bx1 = x + rr;
-      if (y - rr < by0) by0 = y - rr;
-      if (y + rr > by1) by1 = y + rr;
+      if (x < corrX0 || x > corrX1 || y < corrY0 || y > corrY1) return;
+      const rr = Math.max(0.3, Math.min(4.0, r || 0.5));
+      const xLo = Math.max(corrX0 - 1.0, x - rr);
+      const xHi = Math.min(corrX1 + 1.0, x + rr);
+      const yLo = Math.max(corrY0, y - rr);
+      const yHi = Math.min(corrY1 + 1.0, y + rr);
+      if (xLo < bx0) bx0 = xLo;
+      if (xHi > bx1) bx1 = xHi;
+      if (yLo < by0) by0 = yLo;
+      if (yHi > by1) by1 = yHi;
     };
 
     if (game.bird && game.bird.alive) {
@@ -461,64 +565,71 @@ export class Camera {
 
     for (let i = 0; i < w.effects.length; i++) {
       const ef = w.effects[i];
+      // R4: never include beam/ray far-endpoints (ef.x2, ef.y2); skip pure beam lines.
+      if (ef.type === 'beam' || (ef.x2 != null && ef.y2 != null)) continue;
       if (ef.x != null && ef.y != null) {
-        const er = ef.power === 'mega' ? Math.min(10, ef.r || 6) : Math.min(6, ef.r || 1.5);
+        const er = Math.min(4.0, ef.r || 1.2);
         include(ef.x, ef.y, er);
-      }
-      if (ef.x2 != null && ef.y2 != null) {
-        include(clamp(ef.x2, lb.x0, lb.x1), clamp(ef.y2, 0, lb.y1 + 4), 1.0);
       }
     }
 
     if (!Number.isFinite(bx0)) {
-      // Fallback: frame remaining pigs or structure bounds
-      const pigs = w.pigs();
-      if (pigs.length) {
-        for (let i = 0; i < pigs.length; i++) {
-          const p = pigs[i].body.getPosition();
-          include(p.x, p.y, (pigs[i].r || 0.5) + 1.5);
+      // Fallback if ability fired in mid-air before entering [sb.x0 - 8, sb.x1 + 8] or after debris settled
+      if (game.bird && game.bird.alive) {
+        const p = game.bird.body.getPosition();
+        bx0 = clamp(p.x - 3, sling.x - 4, corrX1);
+        bx1 = Math.max(bx0 + 10, Math.min(sb.x1, sb.x0 + 8));
+        by0 = 0;
+        by1 = clamp(Math.max(p.y + 2, sb.y1 + 2), 6, corrY1);
+      } else {
+        const pigs = w.pigs();
+        if (pigs.length) {
+          for (let i = 0; i < pigs.length; i++) {
+            const p = pigs[i].body.getPosition();
+            include(p.x, p.y, (pigs[i].r || 0.5) + 1.5);
+          }
         }
-      }
-      if (!Number.isFinite(bx0)) {
-        bx0 = sb.x0; bx1 = sb.x1; by0 = 0; by1 = Math.max(6, sb.y1);
+        if (!Number.isFinite(bx0)) {
+          bx0 = sb.x0; bx1 = sb.x1; by0 = 0; by1 = Math.max(6, sb.y1);
+        }
       }
     }
 
     // Pad bbox by 3 m per §5
     bx0 -= 3.0;
     bx1 += 3.0;
-    by0 = Math.max(MIN_WORLD_Y, by0 - 3.0);
+    by0 = Math.max(0, by0 - 3.0);
     by1 += 3.0;
 
-    // Scale clamp: [whole level, 10 m tall]
+    // Scale clamp: [whole level, 10 m tall above ground]
+    const gb = this.groundBandPx();
+    const availSkyPx = Math.max(100, this.h - gb);
     const wholeX0 = Math.min(sling.x - 5, sb.x0 - 3);
     const wholeX1 = Math.max(sb.x1 + 3, sling.x + 22);
-    const wholeY1 = Math.max(sb.y1 + 4, 15);
+    const wholeSkyY = Math.max(sb.y1 + 4, 13);
     const isPortrait = this.h > this.w;
     const [sMinLimit] = this._scaleLimits(game, false);
     const sWhole = Math.max(
       sMinLimit,
       isPortrait
         ? this.w / Math.max(14, wholeX1 - wholeX0)
-        : Math.min(this.w / Math.max(14, wholeX1 - wholeX0), this.h / (wholeY1 - MIN_WORLD_Y))
+        : Math.min(this.w / Math.max(14, wholeX1 - wholeX0), availSkyPx / wholeSkyY)
     );
     const sMaxCarnage = isPortrait
       ? Math.max(sWhole, this.w / 10.0)
-      : Math.max(sWhole, this.h / 10.0);
+      : Math.max(sWhole, availSkyPx / 10.0);
 
     const sRaw = Math.min(
       this.w / Math.max(4, bx1 - bx0),
-      this.h / Math.max(4, by1 - by0)
+      availSkyPx / Math.max(4, by1 - by0)
     );
     const ts = clamp(sRaw, sWhole, sMaxCarnage);
 
     const tcx = (bx0 + bx1) / 2;
-    // Keep ground nicely anchored near bottom when bbox touches near y <= 1
-    let tcy = (by0 + by1) / 2;
-    const halfH = (this.h / 2) / ts;
-    if (by0 <= 0.5 && tcy - halfH < MIN_WORLD_Y) {
-      tcy = this._groundAlignedCy(ts, by1);
-    }
+    // Anchor thick ground band steadily unless action genuinely rises above availSkyPx / ts
+    const restCy = this._groundAlignedCy(ts);
+    const minCyForTop = by1 - (this.h / 2) / ts;
+    const tcy = Math.max(restCy, minCyForTop);
 
     // §5 smoothing: position tau = 0.25 s, zoom tau = 0.45 s
     const kp = 1 - Math.exp(-dt / 0.25);
@@ -545,18 +656,20 @@ export class Camera {
 
     const halfW = (this.w / 2) / this.s;
     const halfH = (this.h / 2) / this.s;
+    const rightHudM = this.h > this.w ? 0 : (AIM_RIGHT_HUD_PX / this.s);
 
     const minCx = (lb.x0 - BOUNDS_PAD_X) + halfW;
-    const maxCx = (lb.x1 + BOUNDS_PAD_X) - halfW;
+    const maxCx = (lb.x1 + BOUNDS_PAD_X + rightHudM) - halfW;
     if (minCx <= maxCx) {
       this.cx = clamp(this.cx, minCx, maxCx);
     } else {
       this.cx = (lb.x0 + lb.x1) / 2;
     }
 
-    // Never show below y = -2.0 m
-    const minCy = MIN_WORLD_Y + halfH;
-    const maxTopY = Math.max(lb.y1 + 12, MIN_WORLD_Y + halfH * 2 + 2);
+    // Never pan deeper underground than the rest ground band (and >= 2 m world floor)
+    const maxGroundM = Math.max(2.0, this.groundBandPx() / this.s);
+    const minCy = -maxGroundM + halfH;
+    const maxTopY = Math.max(lb.y1 + 12, -maxGroundM + halfH * 2 + 2);
     const maxCy = maxTopY - halfH;
     this.cy = minCy <= maxCy ? clamp(this.cy, minCy, maxCy) : minCy;
   }

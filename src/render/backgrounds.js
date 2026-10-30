@@ -637,10 +637,13 @@ export function drawBackground(g, cam, biome = 'grass', t = 0) {
     g.beginPath(); g.arc(mx, my, mr, 0, Math.PI * 2); g.fill();
   }
 
-  // 3. Cached parallax layers (scaled harmoniously with world scale, flush with ground at rest)
+  // 3. Cached parallax layers (scaled harmoniously with world scale, flush with R1 ground at rest)
   const assets = getBiomeAssets(key);
   const groundY = cam.sy(0);
-  const restGroundY = h - Math.min(2.0 * cam.s, 0.12 * h);
+  const gbPx = typeof cam.groundBandPx === 'function'
+    ? cam.groundBandPx()
+    : (h > w ? Math.round(0.36 * h) : Math.max(Math.ceil(0.19 * h), h <= 460 ? 106 : 132));
+  const restGroundY = h - gbPx;
   const skyLift = Math.max(0, groundY - restGroundY);
   const pScale = Math.max(0.45, Math.min(1.38, cam.s / 33));
 
@@ -661,21 +664,38 @@ export function drawBackground(g, cam, biome = 'grass', t = 0) {
     g.fillRect(0, midBottom - 2, w, groundTopFillY - midBottom + 4);
   }
 
-  // 4. World-locked ground band (y <= 0)
+  // 4. World-locked thick ground band (y <= 0, tiled vertically with cobblestones/sandstone to bottom)
   if (groundY < h + 4) {
-    const tileScreenW = GROUND_WORLD_W * cam.s;
-    const tileScreenH = GROUND_WORLD_H * cam.s;
-    const viewLeftWorld = cam.cx - (w / 2 + Math.abs(cam.shakeX) + 8) / cam.s;
-    const firstTileIdx = Math.floor(viewLeftWorld / GROUND_WORLD_W);
-    const startScreenX = cam.sx(firstTileIdx * GROUND_WORLD_W);
-
-    // Fill deep base below tile just in case viewport shows deeper than 4 m
-    if (groundY + tileScreenH < h) {
-      g.fillStyle = key === 'desert' ? '#3d2412' : '#0b1636';
-      g.fillRect(0, groundY + tileScreenH - 2, w, h - (groundY + tileScreenH) + 4);
+    const gScale = Math.max(cam.s, 18);
+    const tileScreenW = GROUND_WORLD_W * gScale;
+    const tileScreenH = GROUND_WORLD_H * gScale;
+    let startScreenX;
+    if (gScale === cam.s) {
+      const viewLeftWorld = cam.cx - (w / 2 + Math.abs(cam.shakeX) + 8) / cam.s;
+      const firstTileIdx = Math.floor(viewLeftWorld / GROUND_WORLD_W);
+      startScreenX = cam.sx(firstTileIdx * GROUND_WORLD_W);
+    } else {
+      const scrollPx = cam.cx * cam.s - cam.shakeX;
+      startScreenX = -(((scrollPx % tileScreenW) + tileScreenW) % tileScreenW);
     }
+
+    const srcW = assets.ground.width;
+    const srcH = assets.ground.height;
+    const subSrcY = key === 'desert' ? Math.round(0.48 * GROUND_PX_PER_M) : 60; // skip top moss/sand fringe
+    const subSrcH = srcH - subSrcY;
+    const subScreenH = (subSrcH / srcH) * tileScreenH;
+
     for (let sx = startScreenX; sx < w + tileScreenW; sx += tileScreenW) {
       g.drawImage(assets.ground, sx, groundY - 2, tileScreenW + 0.75, tileScreenH + 2);
+      if (subScreenH >= 8) {
+        for (let ry = groundY + tileScreenH - 2; ry < h + 2; ry += subScreenH - 1) {
+          g.drawImage(
+            assets.ground,
+            0, subSrcY, srcW, subSrcH,
+            sx, ry, tileScreenW + 0.75, subScreenH + 1.5
+          );
+        }
+      }
       if (tileScreenW < 4) break;
     }
   }

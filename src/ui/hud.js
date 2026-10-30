@@ -101,7 +101,7 @@ export class Hud {
           <span class="next-arrow">→</span>
         </button>
 
-        <button id="btn-ability" class="hud-btn hud-ability-btn" type="button" aria-label="技能">
+        <button id="btn-ability" class="hud-btn hud-ability-btn aim-chip" type="button" aria-label="技能">
           <canvas id="ability-icon" width="44" height="44"></canvas>
           <span id="ability-label" class="ability-label">技能</span>
         </button>
@@ -327,9 +327,11 @@ export class Hud {
         const def = bId && BIRDS[bId];
         if (def) this.showBanner(`${def.name} · ${def.ability}`, '', '#fff7d6', false, 1.2, 'bird');
       }
+      this._syncPlayControls();
     });
 
     bus.on(EV.BIRD_READY, ({ birdId }) => {
+      this._syncPlayControls();
       if (this._swallowBootStart || this.screen !== 'play') return;
       if (this.game.state !== STATE.AIM && this.game.state !== STATE.INTRO) return;
       const def = birdId && BIRDS[birdId];
@@ -343,6 +345,7 @@ export class Hud {
       if (this._bannerKind === 'bird') {
         this._fadeOutBirdBanner();
       }
+      this._syncPlayControls();
     });
 
     bus.on(EV.ABILITY, () => {
@@ -350,6 +353,7 @@ export class Hud {
       if (this._bannerKind === 'bird') {
         this._hideBanner();
       }
+      this._syncPlayControls();
     });
 
     bus.on(EV.BANNER, (p) => {
@@ -770,25 +774,34 @@ export class Hud {
       this._els.boss.hidden = true;
     }
 
-    // Ability button & Next-bird button
-    const activeId = g.state === STATE.FLIGHT && g.bird ? g.bird.data.birdId : g.currentBirdId;
-    const def = activeId ? BIRDS[activeId] : null;
-    const ready = g.state === STATE.FLIGHT && !g.abilityUsed && !!def;
-    const used = g.state === STATE.FLIGHT && g.abilityUsed;
+    // Ability button (H1: compact 72x72 70% opacity info chip in AIM; full size + pulse only in FLIGHT) & FLIGHT-only Next-bird button
+    this._syncPlayControls();
+  }
 
+  _syncPlayControls() {
+    const g = this.game;
+    if (!g.level || !g.world) return;
+    const inFlight = g.state === STATE.FLIGHT;
+    const activeId = inFlight && g.bird ? g.bird.data.birdId : g.currentBirdId;
+    const def = activeId ? BIRDS[activeId] : null;
+    const isAimChip = !inFlight;
+    const ready = inFlight && !g.abilityUsed && !!def;
+    const used = inFlight && g.abilityUsed;
+
+    this._els.btnAbility.classList.toggle('aim-chip', isAimChip);
     this._els.btnAbility.classList.toggle('ready', ready);
     this._els.btnAbility.classList.toggle('used', used);
     this._els.abilityLabel.textContent = def ? def.ability : '技能';
 
     const isCompact = typeof window !== 'undefined' && window.innerHeight <= 460;
-    const iconPx = isCompact ? 34 : 44;
+    const iconPx = isAimChip ? 32 : (isCompact ? 34 : 44);
     if (def && (this._lastIconBirdId !== `${def.id}:${iconPx}`)) {
       this._lastIconBirdId = `${def.id}:${iconPx}`;
       drawBirdToCanvas(this._els.abilityIcon, def, iconPx);
     }
 
-    // 下一只 → visible ONLY in FLIGHT after ability used OR 2.5 s (§7)
-    const showNext = g.state === STATE.FLIGHT && (g.abilityUsed || g.flightT >= 2.5);
+    // 下一只 → visible ONLY in FLIGHT after ability used OR 2.5 s (§7 + H1)
+    const showNext = inFlight && (g.abilityUsed || g.flightT >= 2.5);
     this._els.btnNext.hidden = !showNext;
   }
 }

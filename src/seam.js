@@ -33,7 +33,7 @@ export function installSeam(app) {
       game.queue = ['red']; game.birdIndex = 0; game.birdsUsed = 0; game.bird = null;
       game.lastBirdPos = { x: 0, y: 2 };
       game.abilityUsed = false; game.holdUntilT = 0;
-      game.flightT = 0; game.restT = 0; game.clearT = null; game.turnT = 0; game.settleT = 0;
+      game.flightT = 0; game.restT = 0; game.quietT = 0; game.clearT = null; game.turnT = 0; game.settleT = 0;
       game.firstPigKillT = null; game.launchT = null; game.abilityT = null;
       game.events = [];
       game.initialPose = new Map();
