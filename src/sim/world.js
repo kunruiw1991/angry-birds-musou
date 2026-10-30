@@ -136,7 +136,9 @@ export class SimWorld {
   /** Apply damage to an ent. Returns HP damage actually applied. */
   damage(ent, amount, info = {}) {
     if (!ent || !ent.alive || !(ent.hp < Infinity) || amount <= 0) return 0;
-    const take = info.raw ? 1 : (MATERIALS[ent.mat]?.takeMul ?? 1);
+    const isBoss = ent.kind === KIND.PIG &&
+      !!((PIGS[ent.skin] && PIGS[ent.skin].boss) || (typeof ent.skin === 'string' && ent.skin.startsWith('boss_')));
+    const take = info.raw ? 1 : (isBoss ? 1.5 : (MATERIALS[ent.mat]?.takeMul ?? 1));
     const dmg = amount * take;
     if (dmg < 0.5 && !info.allowSmall) return 0;
     const applied = Math.min(ent.hp, dmg);

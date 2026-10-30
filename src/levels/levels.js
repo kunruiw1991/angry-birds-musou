@@ -178,7 +178,7 @@ function level14() {
 
   return {
     id: '1-4', name: '全屏爆破', biome: 'grass',
-    birds: ['bomb', 'chuck', 'blues'], par: 1, star2: 197000,
+    birds: ['bomb', 'chuck', 'blues'], par: 1, star2: 172000,
     sling: { x: 0, y: 0 }, bounds: { x0: -10, x1: 42, y1: 26 },
     terrain: [], blocks, pigs,
   };
@@ -288,7 +288,7 @@ function level22() {
 
   return {
     id: '2-2', name: '神鹰回旋', biome: 'desert',
-    birds: ['hal', 'matilda', 'chuck'], par: 1, star2: 166000,
+    birds: ['hal', 'matilda', 'chuck'], par: 1, star2: 165000,
     sling: { x: 0, y: 2.0 }, bounds: { x0: -10, x1: 48, y1: 28 },
     terrain, blocks, pigs,
   };
@@ -348,7 +348,7 @@ function level23() {
 
   return {
     id: '2-3', name: '巨大化', biome: 'desert',
-    birds: ['terence', 'hal', 'bomb'], par: 1, star2: 170000,
+    birds: ['terence', 'hal', 'bomb'], par: 1, star2: 172000,
     sling: { x: 0, y: 0 }, bounds: { x0: -10, x1: 50, y1: 28 },
     terrain: [], blocks, pigs,
   };
@@ -362,6 +362,7 @@ function level24() {
     { x: -1.2, y: 1.1, w: 5.8, h: 2.2 },
     { x: 24.4, y: 0.7, w: 7.4, h: 1.4 },
     { x: 33.4, y: 1.4, w: 8.2, h: 2.8 },
+    { x: 38.6, y: 4.8, w: 2.0, h: 9.6 },
   ];
 
   // Tier 1 (ground y = 0, x = 16.8, leftEdge = 14.61): vanguard wood/glass bastion
@@ -379,7 +380,7 @@ function level24() {
   // Tier 2 (terrace top y = 1.4, x = 24.4): middle ward
   const tier2 = tower(24.4, 1.4, {
     bays: 3, floors: 3, bayW: 2.15, floorH: 1.56,
-    postMat: ['stone', 'wood', 'stone'], beamMat: ['stone', 'wood'],
+    postMat: ['wood', 'glass', 'wood'], beamMat: 'wood',
     windowMat: 'glass', postW: 0.28,
   });
   blocks.push(...tier2.blocks);
@@ -391,30 +392,34 @@ function level24() {
   blocks.push(tnt(tier2.bayX(0), tier2.floorY(2), 0.62));
   blocks.push(tnt(tier2.bayX(2), tier2.floorY(2), 0.62));
 
-  // Tier 3 (terrace top y = 2.8, x = 33.4, rightEdge = 37.01 -> span = 22.40 m): Wizard's stone sanctum
+  // Tier 3 (terrace top y = 2.8, x = 33.4, rightEdge = 37.01 -> span = 22.40 m): Wizard's sanctum
   const tier3 = tower(33.4, 2.8, {
     bays: 3, floors: 3, bayW: 2.30, floorH: 1.60,
-    postMat: 'stone', beamMat: 'stone', windowMat: 'glass', postW: 0.32,
+    postMat: ['wood', 'stone', 'wood'], beamMat: 'wood', windowMat: 'glass', postW: 0.32,
     skipBays: (f, b) => f < 2 && (b === 0 || b === 1),
   });
   blocks.push(...tier3.blocks);
-  // Boss 巫师猪 (5400 HP) inside stone sanctum WITHOUT ground TNTs -> needs >= 2 birds!
+  // Boss 巫师猪 (5400 HP) inside sanctum (upper TNTs + cliff backstop keep him in kill zone across >= 2 birds!)
   const wizX = (tier3.bayX(0) + tier3.bayX(1)) / 2;
   pigs.push(pigOn(wizX, tier3.floorY(0), 'boss_wizard'));
   pigs.push(pigOn(tier3.bayX(2), tier3.floorY(0), 'helmet'));
   pigs.push(pigOn(tier3.bayX(2), tier3.floorY(1), 'pig'));
   pigs.push(pigOn(tier3.bayX(1), tier3.floorY(2), 'helmet'));
-  blocks.push(tnt(tier3.bayX(0), tier3.floorY(2), 0.62));
+  blocks.push(tnt(tier3.bayX(0), tier3.floorY(2), 0.64));
+  blocks.push(tnt(tier3.bayX(2), tier3.floorY(2), 0.64));
 
-  const spire = hut(33.4, tier3.roofBase, 2.2, 1.36, 'wood', 'stone', 0.28);
+  const spire = hut(33.4, tier3.roofBase, 2.2, 1.36, 'wood', 'wood', 0.28);
   blocks.push(...spire.blocks);
-  blocks.push(cube(tier3.capX(0, 0.50), tier3.roofBase, 0.50, 'stone'));
-  blocks.push(cube(tier3.capX(3, 0.50), tier3.roofBase, 0.50, 'stone'));
+  blocks.push(tnt(33.4, tier3.roofBase, 0.62));
+  blocks.push(tnt(tier3.bayX(0), tier3.roofBase, 0.60));
+  blocks.push(tnt(tier3.bayX(2), tier3.roofBase, 0.60));
+  blocks.push(cube(tier3.capX(0, 0.50), tier3.roofBase, 0.50, 'wood'));
+  blocks.push(cube(tier3.capX(3, 0.50), tier3.roofBase, 0.50, 'wood'));
   blocks.push(cube(33.4, spire.roofBase, 0.50, 'glass'));
 
   return {
     id: '2-4', name: '气球风暴', biome: 'desert',
-    birds: ['bubbles', 'terence', 'matilda', 'bomb'], par: 2, star2: 295000,
+    birds: ['bubbles', 'terence', 'matilda', 'bomb'], par: 2, star2: 314000,
     sling: { x: 0, y: 2.2 }, bounds: { x0: -10, x1: 50, y1: 30 },
     terrain, blocks, pigs,
   };
@@ -477,7 +482,7 @@ function level31() {
 
   return {
     id: '3-1', name: '空军出击', biome: 'city',
-    birds: ['silver', 'bubbles', 'hal'], par: 1, star2: 277000,
+    birds: ['silver', 'bubbles', 'hal'], par: 1, star2: 273000,
     sling: { x: 0, y: 2.8 }, bounds: { x0: -10, x1: 52, y1: 30 },
     terrain, blocks, pigs,
   };
@@ -593,7 +598,7 @@ function level33() {
 
   return {
     id: '3-3', name: '重力反转', biome: 'city',
-    birds: ['stella', 'poppy', 'bomb'], par: 1, star2: 326000,
+    birds: ['stella', 'poppy', 'bomb'], par: 1, star2: 322000,
     sling: { x: 0, y: 0 }, bounds: { x0: -10, x1: 52, y1: 32 },
     terrain, blocks, pigs,
   };
@@ -675,7 +680,7 @@ function level34() {
 
   return {
     id: '3-4', name: '猪王城堡', biome: 'city',
-    birds: ['gale', 'stella', 'silver', 'bomb', 'bubbles'], par: 2, star2: 441000,
+    birds: ['gale', 'stella', 'silver', 'bomb', 'bubbles'], par: 2, star2: 439000,
     sling: { x: 0, y: 2.4 }, bounds: { x0: -10, x1: 56, y1: 34 },
     terrain, blocks, pigs,
   };
@@ -688,6 +693,7 @@ function level35() {
   const terrain = [
     { x: -1.6, y: 1.5, w: 6.4, h: 3.0 },
     { x: 29.4, y: 0.8, w: 10.4, h: 1.6 },
+    { x: 45.6, y: 4.5, w: 2.0, h: 9.0 },
   ];
 
   // Cluster 1 (x = 15.0 & 21.5, leftEdge = 10.96, rightEdge = 23.38): West Vanguard + Supply Depot (~165 blocks!)
@@ -731,20 +737,26 @@ function level35() {
   // Cluster 2 (x = 29.4, y0 = 1.6): 4-bay x 5-floor Elevated Central Imperial Citadel
   const citadel = tower(29.4, 1.6, {
     bays: 4, floors: 5, bayW: 2.34, floorH: 1.54,
-    postMat: 'stone', beamMat: ['stone', 'wood'], windowMat: 'glass', postW: 0.32,
+    postMat: ['wood', 'stone', 'wood'], beamMat: 'wood', windowMat: 'glass', postW: 0.32,
     skipBays: (f, b) => f < 2 && (b === 1 || b === 2),
   });
   blocks.push(...citadel.blocks);
-  const spire = hut(29.4, citadel.roofBase, 2.6, 1.60, 'stone', 'stone', 0.32);
+  const spire = hut(29.4, citadel.roofBase, 2.6, 1.60, 'wood', 'wood', 0.32);
   blocks.push(...spire.blocks);
-  blocks.push(...cubeStack(citadel.bayX(0), citadel.roofBase, 2, 0.48, ['stone', 'glass']).blocks);
-  blocks.push(...cubeStack(citadel.bayX(3), citadel.roofBase, 2, 0.48, ['stone', 'glass']).blocks);
+  blocks.push(...cubeStack(citadel.bayX(0), citadel.roofBase, 2, 0.48, ['wood', 'glass']).blocks);
+  blocks.push(...cubeStack(citadel.bayX(3), citadel.roofBase, 2, 0.48, ['wood', 'glass']).blocks);
 
-  // Boss 巫师猪 (5400 HP) inside stone citadel hall (NO ground TNTs inside hall!)
+  // Boss 巫师猪 (5400 HP) inside citadel hall (upper-floor TNTs collapse into hall on multi-bird siege!)
   pigs.push(pigOn(29.4, citadel.floorY(0), 'boss_wizard'));
-  blocks.push(tnt(citadel.bayX(0), citadel.floorY(2), 0.64));
-  blocks.push(tnt(citadel.bayX(3), citadel.floorY(2), 0.64));
-  blocks.push(tnt(citadel.bayX(1), citadel.floorY(3), 0.64));
+  blocks.push(tnt(citadel.bayX(0), citadel.floorY(2), 0.66));
+  blocks.push(tnt(citadel.bayX(1), citadel.floorY(2), 0.66));
+  blocks.push(tnt(citadel.bayX(3), citadel.floorY(2), 0.66));
+  blocks.push(tnt(citadel.bayX(0), citadel.floorY(3), 0.64));
+  blocks.push(tnt(citadel.bayX(1), citadel.floorY(3), 0.66));
+  blocks.push(tnt(citadel.bayX(2), citadel.floorY(3), 0.66));
+  blocks.push(tnt(citadel.bayX(3), citadel.floorY(3), 0.64));
+  blocks.push(tnt(citadel.bayX(2), citadel.floorY(4), 0.64));
+  blocks.push(tnt(29.4, citadel.roofBase, 0.64));
 
   pigs.push(pigOn(citadel.bayX(0), citadel.floorY(0), 'helmet'));
   pigs.push(pigOn(citadel.bayX(3), citadel.floorY(0), 'king'));
@@ -752,19 +764,24 @@ function level35() {
   pigs.push(pigOn(citadel.bayX(3), citadel.floorY(1), 'helmet'));
   pigs.push(pigOn(citadel.bayX(2), citadel.floorY(2), 'helmet'));
   pigs.push(pigOn(citadel.bayX(1), citadel.floorY(4), 'king'));
-  pigs.push(pigOn(29.4, citadel.roofBase, 'king'));
+  pigs.push(pigOn(29.4, spire.roofBase, 'king'));
 
   // Cluster 3 (x = 40.0, rightEdge = 43.85 -> span = 32.89 m): 4-bay x 5-floor Rear Arsenal Tower
   const rear = tower(40.0, 0, {
     bays: 4, floors: 5, bayW: 1.85, floorH: 1.40,
-    postMat: ['stone', 'wood', 'stone'], beamMat: ['stone', 'wood'], windowMat: 'glass', postW: 0.30,
+    postMat: ['wood', 'glass', 'wood'], beamMat: 'wood', windowMat: 'glass', postW: 0.30,
   });
   blocks.push(...rear.blocks);
   for (let b = 0; b < 4; b++) {
-    const s = cubeStack(rear.bayX(b), rear.roofBase, 2, 0.48, ['stone', 'glass']);
+    const s = cubeStack(rear.bayX(b), rear.roofBase, 2, 0.48, ['wood', 'glass']);
     blocks.push(...s.blocks);
   }
-  blocks.push(tnt(rear.bayX(0), G0, 0.64));
+  blocks.push(tnt(rear.bayX(0), G0, 0.66));
+  blocks.push(tnt(rear.bayX(2), G0, 0.66));
+  blocks.push(tnt(rear.bayX(3), G0, 0.66));
+  blocks.push(tnt(rear.bayX(0), rear.floorY(1), 0.64));
+  blocks.push(tnt(rear.bayX(1), rear.floorY(1), 0.64));
+  blocks.push(tnt(rear.bayX(1), rear.floorY(2), 0.64));
   blocks.push(tnt(rear.bayX(2), rear.floorY(2), 0.64));
   blocks.push(tnt(rear.bayX(1), rear.floorY(4), 0.64));
 
@@ -779,7 +796,7 @@ function level35() {
 
   return {
     id: '3-5', name: '无双乱斗', biome: 'city',
-    birds: BIRD_IDS.slice(), par: 6, star2: 656000,
+    birds: BIRD_IDS.slice(), par: 6, star2: 791000,
     sling: { x: 0, y: 3.0 }, bounds: { x0: -10, x1: 58, y1: 34 },
     terrain, blocks, pigs,
   };

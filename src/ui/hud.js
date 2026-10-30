@@ -2,7 +2,7 @@
 // Spec: docs/DESIGN.md §7. All interactive controls >= 68x68 CSS px, <= 5 visible in AIM/FLIGHT,
 // 0 scrollbars and 0 overlaps across 1280x800, 1024x768, 844x390, 390x844.
 
-import { STATE, EV, PIGS, BIRD_IDS } from '../contracts.js';
+import { STATE, EV, PIGS, BIRD_IDS, SLING } from '../contracts.js';
 import { bus } from '../core/bus.js';
 import { BIRDS } from '../birds/index.js';
 import { LEVELS } from '../levels/levels.js';
@@ -50,6 +50,15 @@ export class Hud {
     this._portraitTipTimer = 0;
     this._wasPortrait = false;
 
+    // C1 (#109): first-time kids coach state (persists tutorialDone in musou_progress; also shows AIM on 1-1 until first launch)
+    this._coachT = 0.55;
+    this._coachMode = null; // null | 'aim' | 'flight'
+    this._coachDraggedThisRun = false;
+    this._coachLaunchedThisRun = false;
+    this._coachAbilityThisRun = false;
+    this._sessionDragDone = false;
+    this._sessionAbilityDone = false;
+
     this._buildDom();
     this._bindEvents();
     this._checkOrientation(true);
@@ -95,6 +104,11 @@ export class Hud {
         </div>
 
         <div id="hud-portrait-tip" class="hud-portrait-tip" hidden>📱 横屏更好玩</div>
+
+        <div id="hud-coach" class="hud-layer hud-coach" hidden>
+          <canvas id="hud-coach-canvas" class="hud-coach-canvas"></canvas>
+          <div id="hud-coach-pill" class="hud-coach-pill" hidden></div>
+        </div>
 
         <button id="btn-next" class="hud-btn hud-next-btn" type="button" aria-label="下一只" hidden>
           <span class="next-label">下一只</span>
@@ -231,6 +245,9 @@ export class Hud {
       bannerMain: this.$('#hud-banner-main'),
       bannerSub: this.$('#hud-banner-sub'),
       portraitTip: this.$('#hud-portrait-tip'),
+      coach: this.$('#hud-coach'),
+      coachCanvas: this.$('#hud-coach-canvas'),
+      coachPill: this.$('#hud-coach-pill'),
 
       selectRows: this.$('#select-rows'),
       selectStars: this.$('#select-total-stars'),
@@ -309,12 +326,17 @@ export class Hud {
       this.displayScore = 0;
       this._hideBanner();
       this._lastIconBirdId = null;
+      this._coachDraggedThisRun = false;
+      this._coachLaunchedThisRun = false;
+      this._coachAbilityThisRun = false;
+      this._coachT = 0.55;
 
       if (this._swallowBootStart) {
         this._swallowBootStart = false;
         this._syncScreens();
         return;
       }
+      this.progress = loadProgress();
       this.progress.lastLevel = levelId;
       saveProgress(this.progress);
       this.app.paused = false;
@@ -328,6 +350,7 @@ export class Hud {
         if (def) this.showBanner(`${def.name} · ${def.ability}`, '', '#fff7d6', false, 1.2, 'bird');
       }
       this._syncPlayControls();
+      this._syncCoach(0);
     });
 
     bus.on(EV.BIRD_READY, ({ birdId }) => {
@@ -339,21 +362,34 @@ export class Hud {
         this.showBanner(`${def.name} · ${def.ability}`, '', '#fff7d6', false, 1.2, 'bird');
         this.app.audio?.play?.('ability_ready');
       }
+      this._syncCoach(0);
     });
 
     bus.on(EV.LAUNCH, () => {
+      this._coachDraggedThisRun = true;
+      this._coachLaunchedThisRun = true;
+      this._sessionDragDone = true;
+      this._coachT = 0;
       if (this._bannerKind === 'bird') {
         this._fadeOutBirdBanner();
       }
       this._syncPlayControls();
+      this._syncCoach(0);
     });
 
     bus.on(EV.ABILITY, () => {
+      this._coachAbilityThisRun = true;
+      this._sessionAbilityDone = true;
+      if (!this.progress.tutorialDone) {
+        this.progress.tutorialDone = true;
+        saveProgress(this.progress);
+      }
       // Never leave or re-show bird·ability banner during ABILITY (#97)
       if (this._bannerKind === 'bird') {
         this._hideBanner();
       }
       this._syncPlayControls();
+      this._syncCoach(0);
     });
 
     bus.on(EV.BANNER, (p) => {
@@ -776,6 +812,7 @@ export class Hud {
 
     // Ability button (H1: compact 72x72 70% opacity info chip in AIM; full size + pulse only in FLIGHT) & FLIGHT-only Next-bird button
     this._syncPlayControls();
+    this._syncCoach(stepDt);
   }
 
   _syncPlayControls() {
@@ -804,6 +841,265 @@ export class Hud {
     const showNext = inFlight && (g.abilityUsed || g.flightT >= 2.5);
     this._els.btnNext.hidden = !showNext;
   }
+
+  // ---------------- C1 (#109) First-Time Kids Coach ----------------
+  _computeCoachMode() {
+    if (this.screen !== 'play' || this.app.paused) return null;
+    const g = this.game;
+    if (!g.level || !g.world) return null;
+
+    // Detect real pull-back drag -> hide AIM coach immediately ("gone after the first drag")
+    const inp = this.app.input;
+    if (inp && inp.dragging && inp.aim && inp.aim().power >= SLING.MIN_POWER) {
+      this._coachDraggedThisRun = true;
+      this._sessionDragDone = true;
+    }
+
+    if (g.state === STATE.AIM && !(this.app.cam?.introActive?.())) {
+      const freshAim = !this.progress.tutorialDone && !this._sessionDragDone;
+      const lv11Aim = g.level.id === '1-1';
+      if ((freshAim || lv11Aim) && g.birdsUsed === 0 && !this._coachDraggedThisRun && !this._coachLaunchedThisRun) {
+        return 'aim';
+      }
+    }
+
+    if (g.state === STATE.FLIGHT && !g.abilityUsed) {
+      const freshFlight = !this.progress.tutorialDone && !this._sessionAbilityDone;
+      if (freshFlight && !this._coachAbilityThisRun) {
+        return 'flight';
+      }
+    }
+
+    return null;
+  }
+
+  _syncCoach(dt = 0) {
+    const mode = this._computeCoachMode();
+    this._coachMode = mode;
+    this._els.btnAbility.classList.toggle('coach-glow', mode === 'flight');
+
+    if (!mode) {
+      if (!this._els.coach.hidden) {
+        this._els.coach.hidden = true;
+        this._els.coachPill.hidden = true;
+      }
+      return;
+    }
+
+    this._coachT += Math.max(0, dt || 0);
+    this._els.coach.hidden = false;
+    this._els.coachPill.hidden = false;
+    this._els.coachPill.classList.toggle('aim-mode', mode === 'aim');
+    this._els.coachPill.classList.toggle('flight-mode', mode === 'flight');
+    const wantedTxt = mode === 'aim' ? '按住小鸟往后拉，松手发射！' : '点屏幕放大招！';
+    if (this._els.coachPill.textContent !== wantedTxt) {
+      this._els.coachPill.textContent = wantedTxt;
+    }
+    this._drawCoachCanvas(mode);
+  }
+
+  _drawCoachCanvas(mode) {
+    const cvs = this._els.coachCanvas;
+    if (!cvs || typeof window === 'undefined') return;
+    const vw = Math.max(1, window.innerWidth || 800);
+    const vh = Math.max(1, window.innerHeight || 600);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const tw = Math.round(vw * dpr);
+    const th = Math.round(vh * dpr);
+    if (cvs.width !== tw || cvs.height !== th) {
+      cvs.width = tw;
+      cvs.height = th;
+    }
+    const ctx = cvs.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, vw, vh);
+
+    if (mode === 'aim') {
+      const pouch = this.game.pouch();
+      const cam = this.app.cam;
+      const px0 = cam ? cam.sx(pouch.x) : vw * 0.16;
+      const py0 = cam ? cam.sy(pouch.y) : vh * 0.72;
+      const sc = Math.max(20, Math.min(72, cam?.s || 42));
+      const ang = 36 * Math.PI / 180;
+      const pullDist = Math.max(46, Math.min(106, sc * 2.05));
+      const px1 = Math.max(24, px0 - Math.cos(ang) * pullDist);
+      const py1 = Math.min(vh - 24, py0 + Math.sin(ang) * pullDist);
+      const cpx = (px0 + px1) * 0.5 - 14;
+      const cpy = (py0 + py1) * 0.5 - 20;
+
+      const u = (this._coachT % 1.75) / 1.75;
+      let dragK = 0;
+      let pressed = false;
+      let alpha = 1;
+      if (u < 0.18) {
+        dragK = 0;
+        pressed = u >= 0.07;
+        alpha = Math.min(1, u / 0.08);
+      } else if (u < 0.74) {
+        const k = (u - 0.18) / 0.56;
+        dragK = k * k * (3 - 2 * k);
+        pressed = true;
+      } else if (u < 0.90) {
+        dragK = 1;
+        pressed = false;
+        alpha = 1 - (u - 0.74) / 0.16;
+      } else {
+        dragK = 0;
+        pressed = false;
+        alpha = (u - 0.90) / 0.10 * 0.4;
+      }
+
+      const qx = (1 - dragK) * (1 - dragK) * px0 + 2 * (1 - dragK) * dragK * cpx + dragK * dragK * px1;
+      const qy = (1 - dragK) * (1 - dragK) * py0 + 2 * (1 - dragK) * dragK * cpy + dragK * dragK * py1;
+
+      ctx.save();
+      // 1. Soft pulse ring on the bird in the pouch
+      const ringR = 20 + 6 * Math.sin(this._coachT * 5);
+      ctx.beginPath();
+      ctx.arc(px0, py0, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 224, 92, 0.78)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      // 2. Curved dashed pull-back arc + arrowhead (pouch -> back-left)
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(px0, py0);
+      ctx.quadraticCurveTo(cpx, cpy, px1, py1);
+      ctx.strokeStyle = 'rgba(43, 21, 6, 0.75)';
+      ctx.lineWidth = 7;
+      ctx.lineCap = 'round';
+      ctx.setLineDash([10, 8]);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.restore();
+
+      // Arrowhead at (px1, py1) along tangent from (cpx, cpy) -> (px1, py1)
+      const tang = Math.atan2(py1 - cpy, px1 - cpx);
+      ctx.save();
+      ctx.translate(px1, py1);
+      ctx.rotate(tang);
+      ctx.beginPath();
+      ctx.moveTo(6, 0);
+      ctx.lineTo(-10, -8);
+      ctx.lineTo(-10, 8);
+      ctx.closePath();
+      ctx.fillStyle = '#ffd54a';
+      ctx.strokeStyle = '#2b1506';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.fill();
+      ctx.restore();
+
+      // 3. Elastic stretch line + forward preview arc dots while dragging
+      if (pressed && dragK > 0.04) {
+        ctx.beginPath();
+        ctx.moveTo(px0, py0);
+        ctx.lineTo(qx, qy);
+        ctx.strokeStyle = 'rgba(255, 138, 36, 0.88)';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+
+        // Forward launch preview dots (up-and-right) showing where the bird will fly
+        const reach = pullDist * (0.9 + 1.5 * dragK);
+        for (let i = 1; i <= 6; i++) {
+          const f = i / 6;
+          const fx = px0 + Math.cos(ang) * reach * f;
+          const fy = py0 - Math.sin(ang) * reach * f + 28 * f * f;
+          ctx.beginPath();
+          ctx.arc(fx, fy, Math.max(2.5, 5.5 - f * 2.5), 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 248, 196, ${(0.85 - f * 0.45).toFixed(2)})`;
+          ctx.strokeStyle = 'rgba(43, 21, 6, 0.7)';
+          ctx.lineWidth = 1.6;
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      // 4. Animated cartoon hand pressing & dragging along the arc
+      ctx.globalAlpha = Math.max(0.25, Math.min(1, alpha));
+      drawCoachHand(ctx, qx, qy, pressed, vh <= 460 ? 0.84 : 1.0);
+      ctx.restore();
+      return;
+    }
+
+    if (mode === 'flight') {
+      // Double golden spotlight rings around #btn-ability
+      const ab = this._els.btnAbility;
+      if (ab && !ab.hidden) {
+        const r = ab.getBoundingClientRect();
+        const cx = r.left + r.width * 0.5;
+        const cy = r.top + r.height * 0.5;
+        const pulse = 0.5 + 0.5 * Math.sin(this._coachT * 7);
+        const rad = Math.max(r.width, r.height) * 0.58 + pulse * 12;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 224, 82, ${(0.88 - pulse * 0.35).toFixed(2)})`;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+}
+
+/** Cute white-gloved cartoon pointer hand with fingertip anchored at (x, y). */
+function drawCoachHand(ctx, x, y, pressed, scale = 1) {
+  ctx.save();
+  ctx.translate(x, y);
+  const s = scale * (pressed ? 0.92 : 1.0);
+  ctx.scale(s, s);
+
+  if (pressed) {
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 214, 58, 0.42)';
+    ctx.fill();
+    ctx.strokeStyle = '#ffd54a';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+
+  ctx.rotate(-0.38);
+  ctx.fillStyle = '#fffdf5';
+  ctx.strokeStyle = '#2b1506';
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Index finger + rounded cartoon glove palm + thumb
+  ctx.beginPath();
+  ctx.moveTo(-5, 0);
+  ctx.quadraticCurveTo(-5, -6, 0, -6);
+  ctx.quadraticCurveTo(5, -6, 5, 0);
+  ctx.lineTo(5, 15);
+  // Curled middle/ring/pinky knuckles
+  ctx.quadraticCurveTo(12, 13, 13, 20);
+  ctx.quadraticCurveTo(19, 19, 19, 26);
+  ctx.quadraticCurveTo(23, 27, 21, 35);
+  // Palm bottom
+  ctx.quadraticCurveTo(18, 46, 4, 46);
+  ctx.quadraticCurveTo(-9, 46, -12, 35);
+  // Thumb sticking out left
+  ctx.quadraticCurveTo(-21, 29, -18, 22);
+  ctx.quadraticCurveTo(-15, 17, -6, 22);
+  ctx.lineTo(-5, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Golden wristband cuff
+  ctx.fillStyle = '#ffb824';
+  ctx.beginPath();
+  ctx.roundRect(-9, 43, 24, 7, 3.5);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 /** Draw a bird sprite cleanly onto a HUD/Codex 2D canvas using BIRDS[id].drawBird (or .icon). */

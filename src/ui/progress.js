@@ -20,6 +20,7 @@ export function defaultProgress() {
     unlocked: ['1-1'],
     muted: false,
     lastLevel: '1-1',
+    tutorialDone: false,
   };
 }
 
@@ -55,6 +56,7 @@ export function loadProgress() {
       unlocked,
       muted: !!p.muted,
       lastLevel: typeof p.lastLevel === 'string' ? p.lastLevel : '1-1',
+      tutorialDone: !!p.tutorialDone,
     };
   } catch (_) {
     return base;

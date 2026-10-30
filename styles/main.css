@@ -139,6 +139,22 @@ html, body {
   animation: abilityPulse 0.65s ease-in-out infinite alternate;
 }
 
+.hud-ability-btn.coach-glow {
+  border-color: #fffbe0;
+  animation: abilityCoachGlow 0.48s ease-in-out infinite alternate;
+}
+
+@keyframes abilityCoachGlow {
+  from {
+    transform: scale(1.01);
+    box-shadow: 0 4px 0 #2b1506, 0 0 18px 6px rgba(255, 224, 64, 0.92), 0 0 36px 14px rgba(255, 118, 24, 0.72);
+  }
+  to {
+    transform: scale(1.09);
+    box-shadow: 0 4px 0 #2b1506, 0 0 28px 12px rgba(255, 238, 110, 1), 0 0 52px 22px rgba(255, 108, 18, 0.92);
+  }
+}
+
 .hud-ability-btn.used {
   opacity: 0.46;
   filter: grayscale(0.45);
@@ -383,6 +399,58 @@ html, body {
   font-size: 15px;
   font-weight: 800;
   color: #fff;
+}
+
+/* C1 (#109): First-time kids coach overlay (strictly pointer-events: none) */
+.hud-coach {
+  pointer-events: none;
+}
+
+.hud-coach-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+.hud-coach-pill {
+  position: absolute;
+  left: 27%;
+  top: 53%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: rgba(20, 28, 48, 0.92);
+  border: 3px solid #ffd54a;
+  border-radius: 999px;
+  padding: 7px 18px;
+  font-size: 18px;
+  font-weight: 900;
+  color: #fff9db;
+  white-space: nowrap;
+  text-shadow: 0 2px 0 #1f0e04;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 16px rgba(255, 213, 74, 0.45);
+}
+
+.hud-coach-pill.flight-mode {
+  left: 50%;
+  top: 55%;
+  background: linear-gradient(180deg, rgba(255, 132, 24, 0.96) 0%, rgba(214, 62, 12, 0.96) 100%);
+  border-color: #fff6ad;
+  color: #fff;
+  font-size: 21px;
+  animation: coachPillPulse 0.52s ease-in-out infinite alternate;
+}
+
+@keyframes coachPillPulse {
+  from {
+    transform: translate(-50%, -50%) scale(0.98);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 14px rgba(255, 224, 82, 0.65);
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1.06);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), 0 0 28px rgba(255, 232, 102, 0.98);
+  }
 }
 
 /* ---------------- Modal Backdrops & Title Screen ---------------- */
@@ -851,6 +919,19 @@ html, body {
   .hud-banner-main { font-size: 22px; }
   .hud-banner-main.big { font-size: 32px; }
 
+  .hud-coach-pill {
+    left: 33%;
+    top: 49%;
+    padding: 5px 13px;
+    font-size: 14px;
+    border-width: 2.5px;
+  }
+  .hud-coach-pill.flight-mode {
+    left: 50%;
+    top: 59%;
+    font-size: 16px;
+  }
+
   .hud-ability-btn {
     right: 10px;
     bottom: 10px;
@@ -997,6 +1078,14 @@ html, body {
   }
   .hud-banner-main { font-size: 24px; }
   .hud-banner-main.big { font-size: 36px; }
+
+  .hud-coach-pill,
+  .hud-coach-pill.flight-mode {
+    left: 50%;
+    top: 52%;
+    padding: 6px 14px;
+    font-size: 15px;
+  }
 
   .hud-ability-btn {
     right: 12px;
