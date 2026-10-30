@@ -1349,9 +1349,150 @@ def t51_settle_drift_zero_all_13_levels(sess: QASession) -> None:
       })()"""
   )
   offenders = {lid: v for lid, v in res.items() if v.get('moved', 0) > 0}
-  if offenders:
-    raise XFail(f'waiting on @levels-hud: #93 settle.moved==0 layout fix pending on {offenders}')
+  assert not offenders, f'settle.moved > 0 on levels: {offenders}'
   assert len(res) == 13, res
+
+
+def t52_first_time_coach_and_tutorial_persistence(sess: QASession) -> None:
+  # Clear saved progress so profile is completely fresh, then reload 1-1.
+  sess.eval_json("(() => { localStorage.removeItem('musou_progress'); return true; })()")
+  assert sess.goto('index.html?level=1-1'), 'Failed reload of index.html?level=1-1 for T52'
+  aim_check = sess.eval_json(
+      """(async () => {
+        const app = window.__APP__;
+        if (app?.cam?.skipIntro) app.cam.skipIntro();
+        window.__MUSOU__.setPaused(false);
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const coach = document.getElementById('hud-coach');
+        const pill = document.getElementById('hud-coach-pill');
+        const raw = JSON.parse(localStorage.getItem('musou_progress') || '{}');
+        return {
+          state: window.__MUSOU__.getState().state,
+          coachFound: Boolean(coach),
+          coachHidden: coach ? coach.hidden : true,
+          pointerEvents: coach ? window.getComputedStyle(coach).pointerEvents : '',
+          pillText: pill ? (pill.textContent || '').trim() : '',
+          tutorialDone: Boolean(raw.tutorialDone),
+        };
+      })()"""
+  )
+  assert aim_check['coachFound'] and aim_check['coachHidden'] is False, (
+      f'Fresh profile did not show #hud-coach on 1-1 AIM: {aim_check}'
+  )
+  assert aim_check['pointerEvents'] == 'none', f'#hud-coach must have pointer-events:none: {aim_check}'
+  assert '按住小鸟往后拉' in aim_check['pillText'], f'Unexpected AIM coach text: {aim_check}'
+  assert aim_check['tutorialDone'] is False, f'Fresh profile had tutorialDone=true before play: {aim_check}'
+
+  # Launch bird 1 -> AIM coach disappears (switches to FLIGHT ability coach) -> useAbility -> #hud-coach hidden + tutorialDone persisted.
+  post_launch = sess.eval_json(
+      """(async () => {
+        const M = window.__MUSOU__;
+        M.setPaused(false);
+        M.launch(32, 0.90);
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const coach = document.getElementById('hud-coach');
+        const pill = document.getElementById('hud-coach-pill');
+        const flightAimMode = pill ? pill.classList.contains('aim-mode') : false;
+        const flightText = pill ? (pill.textContent || '').trim() : '';
+
+        M.useAbility();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const raw = JSON.parse(localStorage.getItem('musou_progress') || '{}');
+        return {
+          flightAimMode,
+          flightText,
+          coachHiddenAfterAbility: coach ? coach.hidden : true,
+          tutorialDonePersisted: Boolean(raw.tutorialDone),
+        };
+      })()"""
+  )
+  assert post_launch['flightAimMode'] is False and '按住小鸟往后拉' not in post_launch['flightText'], (
+      f'AIM coach did not disappear after first launch: {post_launch}'
+  )
+  assert post_launch['coachHiddenAfterAbility'] is True, (
+      f'#hud-coach remained visible after first launch + ability: {post_launch}'
+  )
+  assert post_launch['tutorialDonePersisted'] is True, (
+      f'tutorialDone was not persisted in musou_progress: {post_launch}'
+  )
+
+  # Reload onto 1-2 and verify tutorialDone stays persisted and #hud-coach stays hidden.
+  assert sess.goto('index.html?level=1-2'), 'Failed reload onto index.html?level=1-2 for T52'
+  reload_check = sess.eval_json(
+      """(async () => {
+        const app = window.__APP__;
+        if (app?.cam?.skipIntro) app.cam.skipIntro();
+        window.__MUSOU__.setPaused(false);
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const coach = document.getElementById('hud-coach');
+        const raw = JSON.parse(localStorage.getItem('musou_progress') || '{}');
+        return {
+          coachHidden: coach ? coach.hidden : true,
+          tutorialDone: Boolean(raw.tutorialDone),
+        };
+      })()"""
+  )
+  sess.goto('index.html?level=1-1')
+  sess.assert_clean('T52')
+  assert reload_check['tutorialDone'] is True and reload_check['coachHidden'] is True, (
+      f'Coach reappeared or tutorialDone lost after reload on 1-2: {reload_check}'
+  )
+
+
+def t53_boss_gravitas_survives_bird_1_on_3_4(sess: QASession) -> None:
+  res = sess.eval_json(
+      """(() => {
+        const M = window.__MUSOU__;
+        let rng = 77;
+        const rnd = () => { rng = (rng * 1103515245 + 12345) & 0x7fffffff; return rng / 0x7fffffff; };
+        const checkLevel = (lid, seeds) => {
+          const rows = [];
+          let aliveCount = 0;
+          for (const s of seeds) {
+            const s0 = M.startLevel(lid, { seed: s });
+            M.setPaused(true);
+            const boss0 = s0.pigs.filter((p) => p.variant && p.variant.startsWith('boss_'));
+            const ang = 20 + rnd() * 35;
+            const pw = 0.70 + rnd() * 0.30;
+            const ta = 0.35 + rnd() * 0.55;
+            M.launch(ang, pw);
+            let f = 0;
+            let tapped = false;
+            while (f < 60 * 10) {
+              const step = M.stepFrames(6);
+              f += 6;
+              if (!tapped && f / 60 >= ta) {
+                M.useAbility();
+                tapped = true;
+              }
+              if (step.state !== 'flight') break;
+            }
+            const st = M.getState();
+            const bossAfter = st.pigs.filter((p) => p.variant && p.variant.startsWith('boss_') && p.hp > 0);
+            if (bossAfter.length > 0) aliveCount++;
+            rows.push({
+              seed: s,
+              initialBosses: boss0.length,
+              aliveAfterBird1: bossAfter.length,
+              hp: bossAfter.map((b) => `${b.hp}/${b.maxHp}`),
+            });
+          }
+          return { aliveCount, total: seeds.length, rows };
+        };
+        const out = {
+          '1-4': checkLevel('1-4', [1, 2, 3]),
+          '2-4': checkLevel('2-4', [1, 2, 3]),
+          '3-4': checkLevel('3-4', [1, 2, 3]),
+          '3-5': checkLevel('3-5', [1, 2, 3]),
+        };
+        M.setPaused(false);
+        return out;
+      })()"""
+  )
+  sess.assert_clean('T53')
+  for lid in ('1-4', '2-4', '3-4', '3-5'):
+    assert all(r['initialBosses'] >= 1 for r in res[lid]['rows']), f'Missing boss pig on {lid}: {res[lid]}'
+  assert res['3-4']['aliveCount'] >= 1, f'Boss on 3-4 died on Bird 1 across all 3 seeds: {res["3-4"]}'
 
 
 ALL_TESTS: list[tuple[str, Callable[[QASession], None]]] = [
@@ -1406,11 +1547,13 @@ ALL_TESTS: list[tuple[str, Callable[[QASession], None]]] = [
     ('T49_scripted_13_level_playthrough_hygiene', t49_scripted_13_level_playthrough_hygiene),
     ('T50_amendment_a1_local_reach_and_cluster_spans', t50_amendment_a1_local_reach_and_cluster_spans),
     ('T51_settle_drift_zero_all_13_levels', t51_settle_drift_zero_all_13_levels),
+    ('T52_first_time_coach_and_tutorial_persistence', t52_first_time_coach_and_tutorial_persistence),
+    ('T53_boss_gravitas_survives_bird_1_on_3_4', t53_boss_gravitas_survives_bird_1_on_3_4),
 ]
 
 
 def main() -> int:
-  ap = argparse.ArgumentParser(description='Run 48-test E2E suite for Angry Birds Musou')
+  ap = argparse.ArgumentParser(description='Run 53-test E2E suite for Angry Birds Musou')
   ap.add_argument('--filter', type=str, default='', help='Substring filter on test names')
   ap.add_argument('--strict', action='store_true', help='Treat XFAIL as FAIL (use when all builders READY)')
   args = ap.parse_args()

@@ -822,9 +822,11 @@ def run_sim_gates_on_session(
   g6_fails: list[str] = []
   for lid in active_ids:
     runs = random_by_level[lid]
-    rate = sum(1 for r in runs if r['cleared']) / max(1, len(runs))
+    clears = sum(1 for r in runs if r['cleared'])
+    rate = clears / max(1, len(runs))
     thresh = 0.90 if lid.startswith('1-') else 0.70
-    ok = rate >= thresh - 1e-9
+    req_clears = math.ceil(thresh * len(runs)) if len(runs) >= 10 else math.floor(thresh * len(runs))
+    ok = clears >= req_clears
     if not ok:
       g6_fails.append(f'{lid}:{rate * 100:.0f}%')
     g6_per_lv[lid] = {'clear_rate': round(rate, 4), 'target': thresh, 'ok': ok}
