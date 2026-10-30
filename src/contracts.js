@@ -119,6 +119,7 @@ export const EV = Object.freeze({
   LEVEL_START: 'level:start',   // {levelId, biome}
   BIRD_READY: 'bird:ready',     // {birdId, index, remaining}
   LAUNCH: 'bird:launch',        // {birdId, x, y, vx, vy, power}
+  BIRD_HIT: 'bird:hit',         // {birdId, x, y, speed}  bird/clone impact >= 5 m/s (feathers + thud)
   ABILITY: 'ability',           // {birdId, x, y, name}
   DAMAGE: 'damage',             // {id, kind, mat, amount, x, y, killed, big}
   BREAK: 'break',               // {id, kind, mat, x, y, w, h, r, angle, vx, vy, mass}

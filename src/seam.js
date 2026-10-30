@@ -13,7 +13,8 @@ export function installSeam(app) {
     version: 1,
     listLevels: () => LEVELS.map((l) => ({ id: l.id, name: l.name, biome: l.biome, birds: l.birds.slice(), par: l.par, star2: l.star2 })),
     listBirds: () => BIRD_IDS.map((id) => ({ id, name: BIRDS[id].name, ability: BIRDS[id].ability, desc: BIRDS[id].desc })),
-    startLevel(id, { seed = 1 } = {}) { app.startLevel(id, { seed }); return clone(game.getState()); },
+    /** opts.birds overrides the level's bird queue (e.g. ['chuck']) for ability testing. */
+    startLevel(id, { seed = 1, birds = null } = {}) { app.startLevel(id, { seed, birds }); return clone(game.getState()); },
     launch(angleDeg, power) { return game.launch(angleDeg, power); },
     useAbility(x, y) { return game.useAbility(x == null ? null : { x, y }); },
     skipTurn() { return game.skipTurn(); },

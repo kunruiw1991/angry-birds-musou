@@ -33,7 +33,7 @@ export class Game {
   }
 
   // ---------------- level lifecycle ----------------
-  startLevel(id, { seed = 1 } = {}) {
+  startLevel(id, { seed = 1, birds = null } = {}) {
     const L = getLevel(id);
     if (!L) throw new Error(`unknown level ${id}`);
     if (this.world) this.world.destroy();
@@ -44,7 +44,7 @@ export class Game {
     w.onDamage = (e, applied) => this._onDamage(e, applied);
     w.onImpact = (a, b, J, v, x, y) => this._onImpact(a, b, J, v, x, y);
     this.score = 0; this.combo = 0; this._lastKillT = -99;
-    this.queue = L.birds.slice();
+    this.queue = (birds && birds.length ? birds : L.birds).slice();  // birds override = test/codex sandbox
     this.birdIndex = 0;
     this.birdsUsed = 0;
     this.bird = null;

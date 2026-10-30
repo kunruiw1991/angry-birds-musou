@@ -33,10 +33,10 @@ const stepMs = new Float32Array(240); let stepIdx = 0, stepCount = 0;
 
 const app = {
   game, cam, renderer, input, juice, particles, popups, audio, paused: false,
-  startLevel(id, { seed = 1 } = {}) {
+  startLevel(id, { seed = 1, birds = null } = {}) {
     particles.clear && particles.clear();
     popups.clear && popups.clear();
-    game.startLevel(id, { seed });
+    game.startLevel(id, { seed, birds });
     cam.snapTo && cam.snapTo(game);
   },
   restart() { if (game.level) app.startLevel(game.level.id, { seed: game.seed }); },
